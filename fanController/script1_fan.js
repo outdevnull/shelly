@@ -42,10 +42,9 @@ let getUnixTime = function() {
 };
 
 let log = function(level, message, updateLast) {
-  let timestamp = getTimestamp();
-  let fullMessage = timestamp + " [" + level + "] " + message;
+  let fullMessage = message;  // Just the message, no tags
   
-  print(fullMessage);
+  print("[" + level + "] " + message);  // Console still gets full format
   
   if (updateLast !== false) {
     Shelly.call("Text.Set", {
