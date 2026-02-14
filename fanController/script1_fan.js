@@ -241,7 +241,7 @@ Shelly.addStatusHandler(function(event) {
   }
   
   // === AUTO TURN FAN OFF (humidity-based or max runtime, only if no manual timer active) ===
-  else if (fanOn && !hasTimer && autoStartTime > 0) {
+  else if (fanOn && autoStartTime > 0) {
     let targetOff = baselineHum + CONFIG.auto_return_threshold;
     let nowTime = getUnixTime();
     let elapsed = nowTime - autoStartTime;
