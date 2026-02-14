@@ -1,45 +1,102 @@
 // === Fan Control Watchdog ===
-// Monitors the main fan control script and restarts it if it crashes
+// Monitors the main fan control script and restarts it if it crashes or hangs
 
-let MAIN_SCRIPT_ID = 1;  // Change to your main script's ID
-let CHECK_INTERVAL_MS = 30000;  // Check every 30 seconds
-let LOG_INTERVAL_MS = 300000;  // Only log "OK" status every 5 minutes
+let CONFIG = {
+  main_script_id: 1,              // Main script ID to monitor
+  last_updated_text_id: 200,      // text:200 component to monitor
+  check_interval_ms: 30000,       // Check every 30 seconds
+  log_interval_ms: 300000,        // Log "OK" status every 5 minutes
+  max_stale_seconds: 1800         // Restart if no update for 30 minutes (configurable)
+};
 
 let lastLogTime = 0;
 
 let checkScript = function() {
-  Shelly.call("Script.GetStatus", {id: MAIN_SCRIPT_ID}, function(result, error_code, error_message) {
+  Shelly.call("Script.GetStatus", {id: CONFIG.main_script_id}, function(result, error_code, error_message) {
     if (error_code !== 0) {
       print("[WATCHDOG] Error checking script status: " + error_message);
       return;
     }
     
+    // Check if script is stopped
     if (result && result.running === false) {
       print("[WATCHDOG] Main script stopped! Restarting...");
-      
-      Shelly.call("Script.Start", {id: MAIN_SCRIPT_ID}, function(res, err_code, err_msg) {
-        if (err_code !== 0) {
-          print("[WATCHDOG] Failed to restart script: " + err_msg);
-        } else {
-          print("[WATCHDOG] Script restarted successfully");
-        }
-      });
+      restartScript();
+      return;
+    }
+    
+    // Script is running - now check if it's actually working
+    let textStatus = Shelly.getComponentStatus("text:" + CONFIG.last_updated_text_id);
+    
+    if (!textStatus) {
+      print("[WATCHDOG] ERROR: Cannot read text:" + CONFIG.last_updated_text_id);
+      return;
+    }
+    
+    // Use the last_update_ts from component status (Unix timestamp)
+    let lastUpdateTimestamp = textStatus.last_update_ts || 0;
+    
+    if (lastUpdateTimestamp === 0) {
+      print("[WATCHDOG] WARN: text:200 has never been updated");
+      logOkPeriodically();
+      return;
+    }
+    
+    // Compare to now
+    let sysStatus = Shelly.getComponentStatus("sys");
+    let nowTimestamp = sysStatus.unixtime;
+    let ageSeconds = nowTimestamp - lastUpdateTimestamp;
+    
+    if (ageSeconds > CONFIG.max_stale_seconds) {
+      print("[WATCHDOG] Script appears HUNG! Last update " + Math.floor(ageSeconds/60) + " min ago. Restarting...");
+      restartScript();
     } else {
-      // Only log "OK" periodically to reduce spam
-      let now = Date.now();
-      if (now - lastLogTime >= LOG_INTERVAL_MS) {
-        print("[WATCHDOG] Script running OK");
-        lastLogTime = now;
-      }
+      // Script is running and updating normally
+      logOkPeriodically("Last update " + Math.floor(ageSeconds/60) + " min ago");
     }
   });
 };
 
+let restartScript = function() {
+  Shelly.call("Script.Stop", {id: CONFIG.main_script_id}, function(res, err_code, err_msg) {
+    if (err_code !== 0) {
+      print("[WATCHDOG] Failed to stop script: " + err_msg);
+    } else {
+      print("[WATCHDOG] Script stopped, restarting...");
+      
+      // Wait a moment before restarting
+      Timer.set(2000, false, function() {
+        Shelly.call("Script.Start", {id: CONFIG.main_script_id}, function(res2, err_code2, err_msg2) {
+          if (err_code2 !== 0) {
+            print("[WATCHDOG] Failed to restart script: " + err_msg2);
+          } else {
+            print("[WATCHDOG] Script restarted successfully");
+          }
+        });
+      });
+    }
+  });
+};
+
+let logOkPeriodically = function(extraInfo) {
+  let now = Date.now();
+  if (now - lastLogTime >= CONFIG.log_interval_ms) {
+    let msg = "[WATCHDOG] Script running OK";
+    if (extraInfo) {
+      msg += " (" + extraInfo + ")";
+    }
+    print(msg);
+    lastLogTime = now;
+  }
+};
+
 // Check immediately on startup
 checkScript();
-lastLogTime = Date.now();  // Set initial time so first check logs
+lastLogTime = Date.now();
 
 // Then check periodically
-Timer.set(CHECK_INTERVAL_MS, true, checkScript);
+Timer.set(CONFIG.check_interval_ms, true, checkScript);
 
-print("[WATCHDOG] Initialized - monitoring script " + MAIN_SCRIPT_ID + " (logging every " + (LOG_INTERVAL_MS/60000) + " min)");
+print("[WATCHDOG] Initialized - monitoring script " + CONFIG.main_script_id);
+print("[WATCHDOG] Will restart if text:200 not updated for " + (CONFIG.max_stale_seconds/60) + " minutes");
+print("[WATCHDOG] Status logs every " + (CONFIG.log_interval_ms/60000) + " minutes");
