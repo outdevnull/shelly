@@ -83,9 +83,15 @@ On your Shelly H&T sensor device:
 ```
    http://192.168.X.X/rpc/number.set?id=200&value=${ev.rh}
 ```
+4. Create new action with trigger: **Temperature change**
+5. Set action URL:
+```
+   http://192.168.X.X/rpc/number.set?id=206&value=${ev.tC}
+```
    Replace `192.168.X.X` with your Shelly 1 Gen 3 IP address
 
 This sends humidity updates to `number:200` whenever humidity changes by ±1% or periodically.
+This sends temperature updates to `number:206` whenever temperature changes by ±0.5C or periodically.
 
 ### Step 4: Install Main Script
 
