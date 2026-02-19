@@ -9,6 +9,9 @@ let CONFIG = {
   fan_start_humidity_num_id:  202,   // number:202 - Humidity when fan turned ON
   last_baseline_update_num_id: 203,  // number:203 - Unix timestamp of last baseline update
   auto_start_time_num_id:     204,   // number:204 - Unix timestamp when auto mode started
+  dew_point_num_id:           205,   // number:205 - Calculated field T - (100-RH/5)
+  temperature_num_id:         206,   // number:206 - Temperature C
+  
   
   // Output display (text component)
   last_updated_text_id:       200,   // text:200 - Shows last important event
@@ -19,9 +22,10 @@ let CONFIG = {
   // Logic thresholds
   spike_threshold:            3.0,   // % rise needed to auto turn ON
   auto_return_threshold:      2.0,   // % above baseline to turn OFF (for auto/shower mode)
+  dew_point_gap_threshold:    7.0,   // Max °C gap to confirm it is a shower
   manual_runtime_seconds:     900,   // 15 minutes for manual mode (bathroom #2)
   auto_max_runtime_seconds:   3600,  // Max 1 hour for auto mode (safety net)
-  baseline_update_interval:   300,   // Only update baseline every 5 minutes (prevents chasing slow rises)
+  baseline_update_interval:   300   // Only update baseline every 5 minutes (prevents chasing slow rises)
 };
 
 // Debounce for switch events
@@ -56,6 +60,23 @@ let log = function(level, message, updateLast) {
 
 // Initialization
 log("INFO", "Script initialized - Spike:" + CONFIG.spike_threshold + "% Return:" + CONFIG.auto_return_threshold + "% ManualTime:" + (CONFIG.manual_runtime_seconds/60) + "min AutoMax:" + (CONFIG.auto_max_runtime_seconds/60) + "min");
+
+// === Update Temperature and Set Dew Point ===
+Shelly.addStatusHandler(function(event) {
+  if (event.component !== "number:" + CONFIG.temperature_num_id) return;
+  if (typeof event.delta.value === "undefined") return;
+  
+  let Temperature = event.delta.value;
+  
+  let humStatus = Shelly.getComponentStatus("number:" + CONFIG.current_humidity_num_id);
+  let RelativeHumidity = (humStatus && typeof humStatus.value === "number") ? humStatus.value : 50;
+  
+  let DewPoint = Temperature - ((100-RelativeHumidity)/5)
+  Shelly.call("Number.Set", {
+        id: CONFIG.dew_point_num_id,
+        value: DewPoint
+      });
+});
 
 // === MONITOR SWITCH OUTPUT ===
 Shelly.addStatusHandler(function(event) {
@@ -178,6 +199,14 @@ Shelly.addStatusHandler(function(event) {
   let startHumStatus = Shelly.getComponentStatus("number:" + CONFIG.fan_start_humidity_num_id);
   let autoStartTimeStatus = Shelly.getComponentStatus("number:" + CONFIG.auto_start_time_num_id);
   
+  // Fetch current Temp and DewPoint to check the "Saturation Gap"
+  let tempStat = Shelly.getComponentStatus("number:" + CONFIG.temperature_num_id);
+  let dpStat = Shelly.getComponentStatus("number:" + CONFIG.dew_point_num_id);
+  
+  let currentT = (tempStat) ? tempStat.value : 0;
+  let currentDP = (dpStat) ? dpStat.value : 0;
+  let gap = currentT - currentDP;
+  
   let baselineHum = (baselineStatus && typeof baselineStatus.value === "number")
     ? baselineStatus.value : nowHum;
   let startHum = (startHumStatus && typeof startHumStatus.value === "number")
@@ -195,7 +224,11 @@ Shelly.addStatusHandler(function(event) {
   let rise = nowHum - baselineHum;
   
   // Check for spike FIRST before updating baseline
-  let spikeDetected = !fanOn && rise >= CONFIG.spike_threshold;
+  //let spikeDetected = !fanOn && rise >= CONFIG.spike_threshold;
+  let spikeDetected = !fanOn && (rise >= CONFIG.spike_threshold) && (gap < CONFIG.dew_point_gap_threshold);
+  
+  // LOGGING (Update your DEBUG log to show the gap)
+  log("DEBUG", "H:" + nowHum.toFixed(1) + "% Gap:" + gap.toFixed(1) + "C Fan:" + (fanOn?"ON":"OFF"), false);
   
   // Update baseline when fan is off - but only every X minutes (prevents chasing slow rises)
   // SKIP baseline update if we're about to turn the fan on (avoid too many calls)
