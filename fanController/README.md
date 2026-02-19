@@ -57,6 +57,8 @@ Navigate to your Shelly 1 Gen 3 device → **Components** → **Virtual Componen
 | 202 | Fan Start Humidity | 0 | 100 | Records humidity when fan turns ON |
 | 203 | Last Baseline Update | 0 | 9999999999 | Unix timestamp of last baseline update |
 | 204 | Auto Start Time | 0 | 9999999999 | Unix timestamp when auto mode started |
+| 205 | Dew Point | 0 | 100 | Calculated field T - (100-RH/5) |
+| 206 | Current Temperature | 0 | 100 | Temperature C |
 
 **Text Components:**
 | ID | Name | Enable Event Log | Purpose |
@@ -121,6 +123,8 @@ let CONFIG = {
   manual_runtime_seconds:     900,   // 15 minutes for manual mode (bathroom #2)
   auto_max_runtime_seconds:   3600,  // Max 1 hour for auto mode (safety net)
   baseline_update_interval:   300,   // Only update baseline every 5 minutes
+  dew_point_num_id:           205,   // number:205 - Calculated field T - (100-RH/5)
+  temperature_num_id:         206,   // number:206 - Temperature C
 };
 ```
 
@@ -130,6 +134,7 @@ let CONFIG = {
 |---|---|---|
 | `spike_threshold` | 3.0 | Humidity rise % required to trigger auto turn-ON |
 | `auto_return_threshold` | 2.0 | % above baseline before auto turn-OFF |
+| `dew_point_gap_threshold` | 7.0 | Max °C gap to confirm it is a shower |
 | `manual_runtime_seconds` | 900 | Duration of manual button press (15 min) |
 | `auto_max_runtime_seconds` | 3600 | Maximum runtime for auto mode (60 min safety) |
 | `baseline_update_interval` | 300 | Seconds between baseline updates (5 min) |
