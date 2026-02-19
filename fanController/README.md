@@ -90,8 +90,7 @@ On your Shelly H&T sensor device:
 ```
    Replace `192.168.X.X` with your Shelly 1 Gen 3 IP address
 
-This sends humidity updates to `number:200` whenever humidity changes by ±1% or periodically.
-This sends temperature updates to `number:206` whenever temperature changes by ±0.5C or periodically.
+This sends humidity updates to `number:200` whenever humidity changes by ±1% or periodically, temperature updates will be sent to `number:206` whenever temperature changes by ±0.5C or periodically.
 
 ### Step 4: Install Main Script
 
