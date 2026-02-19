@@ -270,6 +270,9 @@ Shelly.addStatusHandler(function(event) {
         log("ERROR", "Fan ON failed: " + error_message);
       }
     });
+  } else if (!fanOn && rise >= CONFIG.spike_threshold) {
+    // This is what happens during a sharp weather rise:
+    print("[WeatherSpikeDetected] Ignored rise of " + rise.toFixed(1) + "% because Gap is " + gap.toFixed(1));
   }
   
   // === AUTO TURN FAN OFF (humidity-based or max runtime, only if no manual timer active) ===
@@ -312,4 +315,22 @@ Shelly.addStatusHandler(function(event) {
   }
 });
 
-log("INFO", "Status handler registered");
+// === Initialization: Set Dew Point with Safety Check ===
+Timer.set(2000, false, function() { // Wait 2 seconds for sensors to wake up
+  let initHum = Shelly.getComponentStatus("number:" + CONFIG.current_humidity_num_id);
+  let initTemp = Shelly.getComponentStatus("number:" + CONFIG.temperature_num_id);
+
+  if (initHum && initTemp && initTemp.value > 0) {
+    let startDP = initTemp.value - ((100 - initHum.value) / 5);
+    Shelly.call("Number.Set", {
+      id: CONFIG.dew_point_num_id,
+      value: startDP
+    });
+    print("Init: Success. Dew Point set to " + startDP.toFixed(1) + "C");
+  } else {
+    print("Init: Waiting for valid sensor data...");
+  }
+});
+
+
+log("INFO", "Status handlers registered");
