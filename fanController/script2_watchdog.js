@@ -1,104 +1,59 @@
-// === Fan Control Watchdog ===
-// Monitors the main fan control script and restarts it if it crashes or hangs
-// Monitors number:200 (humidity input) to detect sensor or script failures
-
+// === Smart "Either-Or" Watchdog ===
 let CONFIG = {
-  main_script_id: 1,              // Main script ID to monitor
-  humidity_num_id: 200,           // number:200 - humidity input to monitor
-  check_interval_ms: 30000,       // Check every 30 seconds
-  log_interval_ms: 300000,        // Log "OK" status every 5 minutes
-  max_stale_seconds: 1800         // Restart if no humidity update for 30 minutes
+  main_script_id: 1, 
+  humidity_id: 200,    // number:200
+  temperature_id: 206, // number:206
+  check_interval: 30000,
+  max_stale_sec: 5400,       // 90 minutes (Relaxed for overnight stability)
+  startup_grace_sec: 3600    // 60 minutes
 };
 
-let lastLogTime = 0;
+let watchdogStart = Math.floor(Date.now() / 1000);
+let lastLog = 0;
 
-let checkScript = function() {
-  Shelly.call("Script.GetStatus", {id: CONFIG.main_script_id}, function(result, error_code, error_message) {
-    if (error_code !== 0) {
-      print("[WATCHDOG] Error checking script status: " + error_message);
-      return;
-    }
-    
-    // Check if script is stopped
-    if (result && result.running === false) {
-      print("[WATCHDOG] Main script stopped! Restarting...");
-      restartScript();
-      return;
-    }
-    
-    // Script is running - now check if humidity sensor is updating
-    let humidityStatus = Shelly.getComponentStatus("number:" + CONFIG.humidity_num_id);
-    
-    if (!humidityStatus) {
-      print("[WATCHDOG] ERROR: Cannot read number:" + CONFIG.humidity_num_id);
-      return;
-    }
-    
-    // Use the last_update_ts from component status
-    let lastUpdateTimestamp = humidityStatus.last_update_ts || 0;
-    
-    if (lastUpdateTimestamp === 0) {
-      print("[WATCHDOG] WARN: number:200 has never been updated (sensor issue?)");
-      logOkPeriodically();
-      return;
-    }
-    
-    // Compare to now
-    let sysStatus = Shelly.getComponentStatus("sys");
-    let nowTimestamp = sysStatus.unixtime;
-    let ageSeconds = nowTimestamp - lastUpdateTimestamp;
-    
-    if (ageSeconds > CONFIG.max_stale_seconds) {
-      print("[WATCHDOG] No humidity updates for " + Math.floor(ageSeconds/60) + " min! Restarting script...");
-      restartScript();
-    } else {
-      // Script is running and sensor is updating
-      logOkPeriodically("Last humidity update " + Math.floor(ageSeconds/60) + " min ago");
-    }
-  });
-};
+let runCheck = function() {
+  let now = Math.floor(Date.now() / 1000);
+  let uptime = now - watchdogStart;
 
-let restartScript = function() {
-  Shelly.call("Script.Stop", {id: CONFIG.main_script_id}, function(res, err_code, err_msg) {
-    if (err_code !== 0) {
-      print("[WATCHDOG] Failed to stop script: " + err_msg);
-    } else {
-      print("[WATCHDOG] Script stopped, restarting...");
-      
-      // Wait a moment before restarting
-      Timer.set(2000, false, function() {
-        Shelly.call("Script.Start", {id: CONFIG.main_script_id}, function(res2, err_code2, err_msg2) {
-          if (err_code2 !== 0) {
-            print("[WATCHDOG] Failed to restart script: " + err_msg2);
-          } else {
-            print("[WATCHDOG] Script restarted successfully");
-          }
-        });
+  Shelly.call("Script.GetStatus", {id: CONFIG.main_script_id}, function(res, err) {
+    if (err !== 0 || !res.running) {
+      print("[WATCHDOG] Main script stopped. Starting...");
+      Shelly.call("Script.Start", {id: CONFIG.main_script_id});
+      return;
+    }
+
+    // 1. Startup Grace Period
+    if (uptime < CONFIG.startup_grace_sec) {
+      if (now - lastLog > 300) {
+        print("[WATCHDOG] Grace Period: " + Math.floor((CONFIG.startup_grace_sec-uptime)/60) + "m remaining");
+        lastLog = now;
+      }
+      return;
+    }
+
+    // 2. Check Data Health
+    let hStat = Shelly.getComponentStatus("number:" + CONFIG.humidity_id);
+    let tStat = Shelly.getComponentStatus("number:" + CONFIG.temperature_id);
+    
+    let hAge = now - (hStat.last_update_ts || 0);
+    let tAge = now - (tStat.last_update_ts || 0);
+    
+    // THE FIX: We only care about the FRESHEST data point.
+    // If temp updated 2 mins ago but humidity hasn't moved in 2 hours, the sensor is ALIVE.
+    let sensorAge = (hAge < tAge) ? hAge : tAge; 
+
+    if (sensorAge > CONFIG.max_stale_sec) {
+      print("[WATCHDOG] SENSOR OFFLINE (No update from either for " + Math.floor(sensorAge/60) + "m). Restarting...");
+      watchdogStart = now; // Reset grace period
+      Shelly.call("Script.Stop", {id: CONFIG.main_script_id}, function() {
+        Timer.set(2000, false, function() { Shelly.call("Script.Start", {id: CONFIG.main_script_id}); });
       });
+    } else if (now - lastLog > 300) {
+      print("[WATCHDOG] Sensor Alive (Fresh data " + Math.floor(sensorAge/60) + "m ago)");
+      lastLog = now;
     }
   });
 };
 
-let logOkPeriodically = function(extraInfo) {
-  let now = Date.now();
-  if (now - lastLogTime >= CONFIG.log_interval_ms) {
-    let msg = "[WATCHDOG] Script running OK";
-    if (extraInfo) {
-      msg += " (" + extraInfo + ")";
-    }
-    print(msg);
-    lastLogTime = now;
-  }
-};
-
-// Check immediately on startup
-checkScript();
-lastLogTime = Date.now();
-
-// Then check periodically
-Timer.set(CONFIG.check_interval_ms, true, checkScript);
-
-print("[WATCHDOG] Initialized - monitoring script " + CONFIG.main_script_id);
-print("[WATCHDOG] Monitoring number:200 (humidity sensor)");
-print("[WATCHDOG] Will restart if no updates for " + (CONFIG.max_stale_seconds/60) + " minutes");
-print("[WATCHDOG] Status logs every " + (CONFIG.log_interval_ms/60000) + " minutes");
+Timer.set(CONFIG.check_interval, true, runCheck);
+print("Watchdog: Monitoring life signals from Temp & Humidity...");
