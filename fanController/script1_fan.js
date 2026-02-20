@@ -20,9 +20,9 @@ let CONFIG = {
   fan_switch_id:              0,     // switch:0 - The fan relay
   
   // Logic thresholds
-  spike_threshold:            3.0,   // % rise needed to auto turn ON
+  spike_threshold:            5.0,   // % rise needed to auto turn ON
   auto_return_threshold:      2.0,   // % above baseline to turn OFF (for auto/shower mode)
-  dew_point_gap_threshold:    7.0,   // Max °C gap to confirm it is a shower
+  dew_point_gap_threshold:    4.8,   // Max °C gap to confirm it is a shower
   manual_runtime_seconds:     900,   // 15 minutes for manual mode (bathroom #2)
   auto_max_runtime_seconds:   3600,  // Max 1 hour for auto mode (safety net)
   baseline_update_interval:   300   // Only update baseline every 5 minutes (prevents chasing slow rises)
@@ -195,40 +195,31 @@ Shelly.addStatusHandler(function(event) {
   
   let nowHum = event.delta.value;
   
-  let baselineStatus = Shelly.getComponentStatus("number:" + CONFIG.baseline_humidity_num_id);
-  let startHumStatus = Shelly.getComponentStatus("number:" + CONFIG.fan_start_humidity_num_id);
-  let autoStartTimeStatus = Shelly.getComponentStatus("number:" + CONFIG.auto_start_time_num_id);
-  
-  // Fetch current Temp and DewPoint to check the "Saturation Gap"
+  // 1. GET TEMPERATURE & CALCULATE LIVE GAP IMMEDIATELY
   let tempStat = Shelly.getComponentStatus("number:" + CONFIG.temperature_num_id);
-  let dpStat = Shelly.getComponentStatus("number:" + CONFIG.dew_point_num_id);
-  
   let currentT = (tempStat) ? tempStat.value : 0;
-  let currentDP = (dpStat) ? dpStat.value : 0;
-  let gap = currentT - currentDP;
   
-  let baselineHum = (baselineStatus && typeof baselineStatus.value === "number")
-    ? baselineStatus.value : nowHum;
-  let startHum = (startHumStatus && typeof startHumStatus.value === "number")
-    ? startHumStatus.value : nowHum;
-  let autoStartTime = (autoStartTimeStatus && typeof autoStartTimeStatus.value === "number")
-    ? autoStartTimeStatus.value : 0;
+  // This is the most important line: Calculate Gap using the NEW humidity right now
+  let liveDewPoint = currentT - ((100 - nowHum) / 5);
+  let liveGap = currentT - liveDewPoint;
+
+  // Update the display component so you can see the 'real' gap in the UI
+  Shelly.call("Number.Set", { id: CONFIG.dew_point_num_id, value: liveDewPoint });
+
+  let baselineStatus = Shelly.getComponentStatus("number:" + CONFIG.baseline_humidity_num_id);
+  let baselineHum = (baselineStatus && typeof baselineStatus.value === "number") ? baselineStatus.value : nowHum;
   
   let switchStatus = Shelly.getComponentStatus("switch:" + CONFIG.fan_switch_id);
   let fanOn = switchStatus && switchStatus.output === true;
-  let hasTimer = switchStatus && switchStatus.timer_duration && switchStatus.timer_duration > 0;
-  
-  log("DEBUG", "H:" + nowHum.toFixed(1) + "% B:" + baselineHum.toFixed(1) + "% S:" + 
-      startHum.toFixed(1) + "% Fan:" + (fanOn?"ON":"OFF") + " Timer:" + (hasTimer?"YES":"NO"), false);
   
   let rise = nowHum - baselineHum;
-  
-  // Check for spike FIRST before updating baseline
-  //let spikeDetected = !fanOn && rise >= CONFIG.spike_threshold;
-  let spikeDetected = !fanOn && (rise >= CONFIG.spike_threshold) && (gap < CONFIG.dew_point_gap_threshold);
-  
-  // LOGGING (Update your DEBUG log to show the gap)
-  log("DEBUG", "H:" + nowHum.toFixed(1) + "% Gap:" + gap.toFixed(1) + "C Fan:" + (fanOn?"ON":"OFF"), false);
+
+  // 2. CHECK TRIGGER WITH LIVE GAP
+  let spikeDetected = !fanOn && (rise >= CONFIG.spike_threshold) && (liveGap < CONFIG.dew_point_gap_threshold);
+
+  log("DEBUG", "H:" + nowHum.toFixed(1) + "% Gap:" + liveGap.toFixed(1) + "C Fan:" + (fanOn?"ON":"OFF"), false);
+
+  // ... [Rest of your baseline update and fan control logic follows] ...
   
   // Update baseline when fan is off - but only every X minutes (prevents chasing slow rises)
   // SKIP baseline update if we're about to turn the fan on (avoid too many calls)
