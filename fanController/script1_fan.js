@@ -11,7 +11,8 @@ let CONFIG = {
   auto_start_time_num_id:     204,   // number:204 - Unix timestamp when auto mode started
   dew_point_num_id:           205,   // number:205 - Calculated field T - (100-RH/5)
   temperature_num_id:         206,   // number:206 - Temperature C
-  
+  external_humidity_num_id:   207,   // number:207 - External Humidity %
+  external_temp_num_id:       208,   // number:208 - External Temperature C
   
   // Output display (text component)
   last_updated_text_id:       200,   // text:200 - Shows last important event
@@ -31,6 +32,9 @@ let CONFIG = {
 // Debounce for switch events
 let lastSwitchEventTime = 0;
 let SWITCH_DEBOUNCE_MS = 500;  // Ignore events within 500ms of each other
+
+let MIN_HUM_FOR_OVERRIDE = 80.0;
+
 
 let getTimestamp = function() {
   let now = Shelly.getComponentStatus("sys");
@@ -57,6 +61,11 @@ let log = function(level, message, updateLast) {
     });
   }
 };
+
+function calcAH(temp, rh) {
+  // Absolute Humidity formula (g/m3)
+  return (6.112 * Math.exp((17.67 * temp) / (temp + 243.5)) * rh * 2.1674) / (273.15 + temp);
+}
 
 // Initialization
 log("INFO", "Script initialized - Spike:" + CONFIG.spike_threshold + "% Return:" + CONFIG.auto_return_threshold + "% ManualTime:" + (CONFIG.manual_runtime_seconds/60) + "min AutoMax:" + (CONFIG.auto_max_runtime_seconds/60) + "min");
@@ -194,117 +203,75 @@ Shelly.addStatusHandler(function(event) {
   if (typeof event.delta.value === "undefined") return;
   
   let nowHum = event.delta.value;
-  
-  // 1. GET TEMPERATURE & CALCULATE LIVE GAP IMMEDIATELY
+  if (humBaseline === 0) humBaseline = nowHum; // Initial boot safety
+
+  // 1. GET INTERNAL DATA
   let tempStat = Shelly.getComponentStatus("number:" + CONFIG.temperature_num_id);
   let currentT = (tempStat) ? tempStat.value : 0;
   
-  // This is the most important line: Calculate Gap using the NEW humidity right now
-  let liveDewPoint = currentT - ((100 - nowHum) / 5);
-  let liveGap = currentT - liveDewPoint;
+  // 2. GET EXTERNAL DATA
+  let extStat = Shelly.getComponentStatus("number:" + CONFIG.external_humidity_num_id);
+  let extTempStat = Shelly.getComponentStatus("number:" + CONFIG.external_temp_num_id);
+  let extHum = (extStat && extStat.value > 0) ? extStat.value : nowHum;
+  let extTemp = (extTempStat) ? extTempStat.value : currentT;
 
-  // Update the display component so you can see the 'real' gap in the UI
-  Shelly.call("Number.Set", { id: CONFIG.dew_point_num_id, value: liveDewPoint });
+  // 3. CALCULATE ABSOLUTE MOISTURE (The "Gundaroo Fix")
+  let inAH = calcAH(currentT, nowHum);
+  let outAH = calcAH(extTemp, extHum);
+  let ahDelta = inAH - outAH; // How many grams drier is the outside air?
 
-  let baselineStatus = Shelly.getComponentStatus("number:" + CONFIG.baseline_humidity_num_id);
-  let baselineHum = (baselineStatus && typeof baselineStatus.value === "number") ? baselineStatus.value : nowHum;
-  
+  // 4. DETECT SPIKE (Human activity)
+  let rhSpike = nowHum - humBaseline;
+
+  // 5. GET SYSTEM STATE
   let switchStatus = Shelly.getComponentStatus("switch:" + CONFIG.fan_switch_id);
-  let fanOn = switchStatus && switchStatus.output === true;
+  let fanOn = (switchStatus && switchStatus.output === true);
   
-  let rise = nowHum - baselineHum;
+  // 6. TRIGGER LOGIC
+  let shouldTrigger = false;
 
-  // 2. CHECK TRIGGER WITH LIVE GAP
-  let spikeDetected = !fanOn && (rise >= CONFIG.spike_threshold) && (liveGap < CONFIG.dew_point_gap_threshold);
-
-  log("DEBUG", "H:" + nowHum.toFixed(1) + "% Gap:" + liveGap.toFixed(1) + "C Fan:" + (fanOn?"ON":"OFF"), false);
-
-  // ... [Rest of your baseline update and fan control logic follows] ...
+  // Rule A: Shower Spike + Outside air is actually drier (AH)
+  if (rhSpike >= 5.0 && ahDelta > 0.5) {
+    shouldTrigger = true;
+    log("ALERT", "Shower Spike Detected (+" + rhSpike.toFixed(1) + "%). Outside air is drier by " + ahDelta.toFixed(1) + "g/m3.");
+  }
+  // 1. Define a DYNAMIC floor based on the current outside air
+  let humidityFloor = extHum + 2.0;
   
-  // Update baseline when fan is off - but only every X minutes (prevents chasing slow rises)
-  // SKIP baseline update if we're about to turn the fan on (avoid too many calls)
-  if (!fanOn && !spikeDetected) {
-    let lastUpdateStatus = Shelly.getComponentStatus("number:" + CONFIG.last_baseline_update_num_id);
-    let lastUpdate = (lastUpdateStatus && typeof lastUpdateStatus.value === "number") 
-      ? lastUpdateStatus.value : 0;
-    let nowTime = getUnixTime();
+   // Rule B: Adaptive High Humidity Override
+  if (nowHum > humidityFloor && nowHum > MIN_HUM_FOR_OVERRIDE && ahDelta > 1.2) { 
+    shouldTrigger = true;
+    log("ALERT", "High Humidity Override. Bathroom (" + nowHum.toFixed(1) + "%) is wetter than outside (" + extHum.toFixed(1) + "%).");
+  }
+  // 7. ACTIONS
+  if (!fanOn && shouldTrigger) {
+    Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: true });
+    // Reset baseline so we don't double-trigger
+    humBaseline = nowHum; 
+  } 
+  else if (fanOn) {
+    // OFF LOGIC: Switch off if AH equalizes or humidity drops back to baseline
+    // Check if we are still in "Soup" territory (Rule B)
+    //let stillSoup = (nowHum > 84.0 && ahDelta > 1.0);
+    let stillSoup = (nowHum > humidityFloor || ahDelta > 0.8);
     
-    // If never initialized, treat as if update interval has passed
-    let timeSinceUpdate = (lastUpdate > 0) ? (nowTime - lastUpdate) : CONFIG.baseline_update_interval;
-    
-    if (timeSinceUpdate >= CONFIG.baseline_update_interval) {
-      Shelly.call("Number.Set", {
-        id: CONFIG.baseline_humidity_num_id,
-        value: nowHum
-      });
-      Shelly.call("Number.Set", {
-        id: CONFIG.last_baseline_update_num_id,
-        value: nowTime
-      });
-      print("[BASELINE] Updated to " + nowHum.toFixed(1) + "% (" + timeSinceUpdate + "s since last)");
-    } else {
-      let remaining = CONFIG.baseline_update_interval - timeSinceUpdate;
-      print("[BASELINE] Skipping, " + remaining + "s remaining");
+    // Only turn off if we are NOT in the soup AND we hit a stop condition
+    //if (!stillSoup && (ahDelta <= 0.2 || nowHum <= (humBaseline + 2))) {
+    if (!stillSoup && (ahDelta <= 0.3)) {
+      log("INFO", "Air cleared. AH Delta: " + ahDelta.toFixed(1) + "g. Turning off.");
+      Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: false });
     }
   }
-  
-  // === AUTO TURN FAN ON (spike detected) ===
-  if (spikeDetected) {
-    log("ALERT", "SPIKE! " + baselineHum.toFixed(1) + "→" + nowHum.toFixed(1) + 
-        "% (+" + rise.toFixed(1) + "%) → AUTO FAN ON");
-    
-    Shelly.call("Switch.Set", { 
-      id: CONFIG.fan_switch_id, 
-      on: true
-    }, function(result, error_code, error_message) {
-      if (error_code !== 0) {
-        log("ERROR", "Fan ON failed: " + error_message);
-      }
-    });
-  } else if (!fanOn && rise >= CONFIG.spike_threshold) {
-    // This is what happens during a sharp weather rise:
-    print("[WeatherSpikeDetected] Ignored rise of " + rise.toFixed(1) + "% because Gap is " + gap.toFixed(1));
-  }
-  
-  // === AUTO TURN FAN OFF (humidity-based or max runtime, only if no manual timer active) ===
-  else if (fanOn && autoStartTime > 0) {
-    let targetOff = baselineHum + CONFIG.auto_return_threshold;
-    let nowTime = getUnixTime();
-    let elapsed = nowTime - autoStartTime;
-    
-    print("[AUTO OFF CHECK] Current:" + nowHum.toFixed(1) + "% Target:" + targetOff.toFixed(1) + "% Elapsed:" + (elapsed/60).toFixed(1) + "min");
-    
-    // Check if humidity normalized
-    if (nowHum <= targetOff) {
-      log("ALERT", "Humidity normalized: " + nowHum.toFixed(1) + "% ≤ " + targetOff.toFixed(1) + "% → AUTO FAN OFF");
-      
-      Shelly.call("Switch.Set", { 
-        id: CONFIG.fan_switch_id, 
-        on: false 
-      }, function(result, error_code, error_message) {
-        if (error_code !== 0) {
-          log("ERROR", "Fan OFF failed: " + error_message);
-        }
-      });
-    }
-    // Check if max runtime exceeded
-    else if (elapsed >= CONFIG.auto_max_runtime_seconds) {
-      let elapsedMin = (elapsed / 60).toFixed(1);
-      log("ALERT", "Max runtime reached (" + elapsedMin + " min) → AUTO FAN OFF");
-      
-      Shelly.call("Switch.Set", { 
-        id: CONFIG.fan_switch_id, 
-        on: false 
-      }, function(result, error_code, error_message) {
-        if (error_code !== 0) {
-          log("ERROR", "Fan OFF failed: " + error_message);
-        }
-      });
-    } else {
-      print("[AUTO] Humidity still high, waiting... (" + (CONFIG.auto_max_runtime_seconds - elapsed) + "s remaining)");
-    }
-  }
+
+  // Updated Debug Logging
+  log("DEBUG", 
+    "IN: " + nowHum.toFixed(1) + "% (" + inAH.toFixed(1) + "g) " +
+    "OUT: " + extHum.toFixed(1) + "% (" + outAH.toFixed(1) + "g) " +
+    "AH Delta: " + ahDelta.toFixed(1) + "g", 
+    false
+  );
 });
+ 
 
 // === Initialization: Set Dew Point with Safety Check ===
 Timer.set(2000, false, function() { // Wait 2 seconds for sensors to wake up
@@ -321,6 +288,12 @@ Timer.set(2000, false, function() { // Wait 2 seconds for sensors to wake up
   } else {
     print("Init: Waiting for valid sensor data...");
   }
+});
+// Global baseline for spike detection
+let humBaseline = 0;
+Timer.set(15 * 60 * 1000, true, function() {
+  let h = Shelly.getComponentStatus("number:" + CONFIG.current_humidity_num_id);
+  if (h) humBaseline = h.value;
 });
 
 
