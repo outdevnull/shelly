@@ -1,4 +1,4 @@
-// === Bathroom Fan - High-Frequency Forensic Logic ===
+// === Bathroom Fan - Forensic Logic with Startup & Trace Logging ===
 
 let CONFIG = {
   current_humidity_num_id:    200,   
@@ -8,10 +8,10 @@ let CONFIG = {
   dew_point_num_id:           205,   
   fan_switch_id:              0,     
   
-  // --- AGGRESSIVE TUNING FOR BATTERY SENSORS ---
-  dp_shower_spike:            0.8,   // Very sensitive to catch slow sensor wake-ups
+  // --- TUNED FOR BATTERY SENSOR LAG ---
+  dp_shower_spike:            0.7,   
   dp_sanity_floor:            21.0,  
-  ah_efficiency_threshold:    0.8,   // Lowered to ensure logic doesn't block a trigger
+  ah_efficiency_threshold:    0.8,   
   auto_max_runtime_seconds:   3600   
 };
 
@@ -21,7 +21,9 @@ let autoStartTime = 0;
 
 function calcAH(t, rh) { return (6.112 * Math.exp((17.67 * t) / (t + 243.5)) * rh * 2.1674) / (273.15 + t); }
 function calcDP(t, rh) { return t - ((100 - rh) / 5); }
+function log(level, msg) { print("[" + level + "] " + msg); }
 
+// === 1. SENSOR UPDATE HANDLER ===
 Shelly.addStatusHandler(function(event) {
   if (event.component !== "number:" + CONFIG.current_humidity_num_id) return;
   if (typeof event.delta.value === "undefined") return;
@@ -42,35 +44,29 @@ Shelly.addStatusHandler(function(event) {
   let swStatus = Shelly.getComponentStatus("switch:" + CONFIG.fan_switch_id);
   let fanOn = (swStatus && swStatus.output === true);
 
-  // --- LOGIC CALCULATIONS ---
-  let spikeVsBaseline = nowDP - dpBaseline;
-  let suddenJump = (lastReportedDP > 0) ? (nowDP - lastReportedDP) : 0;
+  let spikeVal = nowDP - dpBaseline;
+  let jumpVal = (lastReportedDP > 0) ? (nowDP - lastReportedDP) : 0;
   
-  let isSpiking = spikeVsBaseline > CONFIG.dp_shower_spike;
+  let isSpiking = spikeVal > CONFIG.dp_shower_spike;
   let isTropical = nowDP > CONFIG.dp_sanity_floor;
   let isEfficient = ahDelta > CONFIG.ah_efficiency_threshold;
 
-  // --- THE "FORENSIC TRACE" ---
-  // This will tell us if the sensor is "holding back" data
-  print("--- DATA RECEIVED ---");
-  print("DP Now: " + nowDP.toFixed(2) + " (Baseline: " + dpBaseline.toFixed(2) + ")");
-  print("DP Change since last Wi-Fi Wake: +" + suddenJump.toFixed(2));
-  print("Total Spike: +" + spikeVsBaseline.toFixed(2) + " (Need: " + CONFIG.dp_shower_spike + ")");
-  print("AH Delta (Efficiency): " + ahDelta.toFixed(2) + " (Need: " + CONFIG.ah_efficiency_threshold + ")");
-  print("Gatekeepers: Spike:" + isSpiking + " | Muggy:" + isTropical + " | Efficient:" + isEfficient);
-
+  // --- FORENSIC TRACE ---
+  print("--- SENSOR UPDATE RECEIVED ---");
+  print("Values  | DP: " + nowDP.toFixed(2) + "C | AH-In: " + inAH.toFixed(2) + "g | AH-Out: " + outAH.toFixed(2) + "g");
+  print("Metrics | Total Spike: " + spikeVal.toFixed(2) + "C | Jump: " + jumpVal.toFixed(2) + "C | AH-Delta: " + ahDelta.toFixed(2));
+  print("Status  | Spike:" + isSpiking + " | Muggy:" + isTropical + " | Efficient:" + isEfficient + " | Fan:" + (fanOn ? "ON" : "OFF"));
+  
   lastReportedDP = nowDP;
 
   if (!fanOn) {
     if ((isSpiking || isTropical) && isEfficient) {
       let reason = isSpiking ? "SHOWER SPIKE" : "MUGGY OVERRIDE";
       autoStartTime = Shelly.getComponentStatus("sys").unixtime;
-      log("TRIGGER", "Fan ON [" + reason + "] DP:+" + spikeVsBaseline.toFixed(1));
+      log("TRIGGER", "Fan ON [" + reason + "] DP:+" + spikeVal.toFixed(1) + " AH-D:" + ahDelta.toFixed(1));
       Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: true });
     }
-  } 
-  else {
-    // Off logic remains the same
+  } else {
     let now = Shelly.getComponentStatus("sys").unixtime;
     if (nowDP < (dpBaseline + 0.5) || (now - autoStartTime) > CONFIG.auto_max_runtime_seconds) {
       log("STOP", "Fan OFF. Air stabilized.");
@@ -79,7 +75,29 @@ Shelly.addStatusHandler(function(event) {
   }
 });
 
-// Update baseline every 5 minutes when fan is off
+// === 2. INITIALIZATION LOG (Runs once at start) ===
+Timer.set(2000, false, function() {
+  let h = Shelly.getComponentStatus("number:" + CONFIG.current_humidity_num_id);
+  let t = Shelly.getComponentStatus("number:" + CONFIG.temperature_num_id);
+  let eh = Shelly.getComponentStatus("number:" + CONFIG.external_humidity_num_id);
+  let et = Shelly.getComponentStatus("number:" + CONFIG.external_temp_num_id);
+
+  if (h && t) {
+    dpBaseline = calcDP(t.value, h.value);
+    let startInAH = calcAH(t.value, h.value);
+    let startOutAH = (eh && et) ? calcAH(et.value, eh.value) : startInAH;
+    
+    log("INIT", "Script Started Successfully");
+    log("INIT", "Current Bathroom: " + t.value + "C / " + h.value + "% (DP: " + dpBaseline.toFixed(1) + "C)");
+    log("INIT", "Current Outside: " + (et?et.value:"N/A") + "C / " + (eh?eh.value:"N/A") + "%");
+    log("INIT", "Starting AH Delta: " + (startInAH - startOutAH).toFixed(2) + "g");
+    log("INIT", "Thresholds: Spike >" + CONFIG.dp_shower_spike + "C | AH-Delta >" + CONFIG.ah_efficiency_threshold + "g");
+  } else {
+    log("WARNING", "Init failed: Sensors not ready. Waiting for first update...");
+  }
+});
+
+// === 3. BASELINE UPDATER ===
 Timer.set(300000, true, function() {
   let sw = Shelly.getComponentStatus("switch:" + CONFIG.fan_switch_id);
   if (sw && !sw.output) {
@@ -88,5 +106,3 @@ Timer.set(300000, true, function() {
     if (t && h) dpBaseline = calcDP(t.value, h.value);
   }
 });
-
-function log(level, msg) { print("[" + level + "] " + msg); }
