@@ -1,301 +1,255 @@
 # Shelly Bathroom Fan Humidity Control
 
-Intelligent bathroom fan control for Shelly 1 Gen 3 with humidity sensor integration. Automatically detects humidity spikes (showers) and manages fan runtime with dual-mode operation.
-
-## Features
-
-- 🚿 **Auto Detection**: Detects humidity spikes (e.g., shower starting) and automatically turns fan ON
-- ⏱️ **Smart Turn-Off**: Automatically turns fan OFF when humidity returns to near-baseline levels
-- 🚽 **Manual Mode**: Button press runs fan for configurable duration (default: 15 minutes)
-- 🛡️ **Safety Net**: Maximum runtime limit prevents fan from running indefinitely (default: 60 minutes)
-- 📊 **Comprehensive Logging**: Event log tracking and real-time status display
-- 🔄 **Crash Protection**: Debounce logic and watchdog script support
-- 🎯 **Baseline Tracking**: Intelligent baseline humidity tracking prevents false triggers from slow ambient changes
+Intelligent bathroom fan control using dew point and absolute humidity calculations to detect showers and manage fan runtime. Runs on a Shelly switch device with an external Shelly H&T G3 sensor.
 
 ## How It Works
 
-### Auto Mode (Humidity Spike Detection)
-1. Script monitors baseline humidity when fan is OFF
-2. When humidity rises ≥3% from baseline → Fan turns ON automatically
-3. Fan runs until humidity drops to within 2% of original baseline
-4. Safety: Maximum 60-minute runtime if humidity stays high
+Rather than reacting to raw humidity percentage, the script uses **dew point (DP)** and **absolute humidity (AH)** to make smarter decisions:
 
-### Manual Mode (Button Press)
-1. User presses wall switch button
-2. Fan runs for 15 minutes (configurable)
-3. Auto-turns OFF after timer expires
-4. If humidity spikes during manual mode, continues in manual mode (timer runs its course)
+- **Dew point spike detection** — a rising DP indicates moisture being added to the air (e.g. a shower), not just ambient humidity fluctuation
+- **Absolute humidity efficiency check** — compares indoor vs outdoor AH to confirm running the fan will actually remove moisture. If outdoor air is already as humid as indoor, the fan won't run
+- **Baseline tracking** — a rolling baseline DP is maintained when the fan is off, so spike detection is always relative to current ambient conditions
 
-### Baseline Intelligence
-- Baseline only updates every 5 minutes when fan is OFF
-- Prevents "chasing" slow ambient humidity rises
-- Resets immediately when fan turns OFF
-- Allows spike detection to accumulate over gradual increases
+### Fan ON Logic
+The fan turns on when **both** conditions are true:
+1. Indoor DP has risen > `dp_shower_spike` (0.7°C) above baseline — **or** DP is above `dp_sanity_floor` (21°C) for very muggy conditions
+2. Indoor AH exceeds outdoor AH by > `ah_efficiency_threshold` (0.4 g/kg) — running the fan is worthwhile
+
+### Fan OFF Logic
+The fan turns off when indoor DP drops back to within `dp_stop_threshold` (1.5°C) of baseline. The script checks this:
+- On every sensor update (event-driven)
+- Every 2 minutes via a poll timer (catches the case where humidity plateaus and the sensor stops firing)
+
+### Safety Net
+The Shelly hardware auto-off timer (set to 1 hour) acts as the hard safety cutoff. This is intentionally handled in hardware rather than code — it survives script crashes and watchdog restarts.
+
+---
 
 ## Requirements
 
 ### Hardware
-- Shelly 1 Gen 3 (relay/switch)
-- Shelly H&T (humidity & temperature sensor) or compatible humidity sensor
-- Wall-mounted momentary switch connected to input:0
+- Shelly switch device (e.g. Shelly 1 Gen 3)
+- Shelly H&T G3 humidity & temperature sensor
+- Outdoor weather station or sensor (for AH efficiency comparison)
 
-### Shelly Firmware
-- Shelly 1 Gen 3 firmware with scripting support
-- Tested on firmware version 1.x+
+### Virtual Components on Shelly Switch
+
+Navigate to your device → **Components** → **Virtual Components** and create:
+
+| Type | ID | Name | Purpose |
+|---|---|---|---|
+| Number | 200 | Current Humidity | Receives bathroom humidity from H&T |
+| Number | 205 | Dew Point | Calculated reference field |
+| Number | 206 | Current Temperature | Receives bathroom temperature from H&T |
+| Number | 207 | External Humidity | Receives outdoor humidity |
+| Number | 208 | External Temperature | Receives outdoor temperature |
+
+---
 
 ## Installation
 
-### Step 1: Create Virtual Components
-
-Navigate to your Shelly 1 Gen 3 device → **Components** → **Virtual Components**
-
-**Number Components:**
-| ID | Name | Min | Max | Purpose |
-|---|---|---|---|---|
-| 200 | Current Humidity | 0 | 100 | Receives humidity readings from sensor |
-| 201 | Baseline Humidity | 0 | 100 | Stores last "calm" humidity level |
-| 202 | Fan Start Humidity | 0 | 100 | Records humidity when fan turns ON |
-| 203 | Last Baseline Update | 0 | 9999999999 | Unix timestamp of last baseline update |
-| 204 | Auto Start Time | 0 | 9999999999 | Unix timestamp when auto mode started |
-| 205 | Dew Point | 0 | 100 | Calculated field T - (100-RH/5) |
-| 206 | Current Temperature | 0 | 100 | Temperature C |
-
-**Text Components:**
-| ID | Name | Enable Event Log | Purpose |
-|---|---|---|---|
-| 200 | Last Updated | ✅ Yes | Shows last important event with timestamp |
-
-### Step 2: Configure Switch Auto-Off
-
-**CRITICAL**: This must be enabled for timer functionality to work!
+### Step 1: Configure Shelly Auto-Off Timer
 
 1. Go to **Settings** → **switch:0** → **Auto off**
-2. ✅ **Enable the "Auto off" checkbox**
-3. Set value to any number (e.g., 3600 seconds)
-   - The script will override this value when needed
-   - But the checkbox MUST be enabled for `toggle_after` to work
+2. Enable **Auto off** and set to **3600 seconds** (1 hour)
 
-### Step 3: Configure H&T Sensor Action
+This is the hard safety cutoff. The script does not manage its own maximum runtime timer.
 
-On your Shelly H&T sensor device:
+### Step 2: Configure H&T G3 Sensor Actions
 
-1. Go to **Actions**
-2. Create new action with trigger: **Humidity change**
-3. Set action URL:
+On your Shelly H&T G3:
+
+1. Go to **Actions** → create action with trigger **Humidity change**:
 ```
-   http://192.168.X.X/rpc/number.set?id=200&value=${ev.rh}
+http://YOUR_SHELLY_IP/rpc/number.set?id=200&value=${ev.rh}
 ```
-4. Create new action with trigger: **Temperature change**
-5. Set action URL:
+2. Create action with trigger **Temperature change**:
 ```
-   http://192.168.X.X/rpc/number.set?id=206&value=${ev.tC}
+http://YOUR_SHELLY_IP/rpc/number.set?id=206&value=${ev.tC}
 ```
-   Replace `192.168.X.X` with your Shelly 1 Gen 3 IP address
 
-This sends humidity updates to `number:200` whenever humidity changes by ±1% or periodically, temperature updates will be sent to `number:206` whenever temperature changes by ±0.5C or periodically.
+The H&T G3 will push updates on every 1% humidity change and every 0.5°C temperature change.
 
-### Step 4: Install Main Script
+### Step 3: Configure Outdoor Sensor Actions
 
-1. Go to **Scripts** on your Shelly 1 Gen 3
-2. Create new script, name it "Bathroom Fan Control"
-3. Paste the script code (see `bathroom-fan-control.js`)
-4. ✅ Enable "Start on boot"
-5. Save and start the script
+Point your outdoor sensor actions at:
+```
+http://YOUR_SHELLY_IP/rpc/number.set?id=207&value=${humidity}
+http://YOUR_SHELLY_IP/rpc/number.set?id=208&value=${temperature}
+```
 
-### Step 5: (Optional) Install Watchdog Script
+### Step 4: Install Main Script (script1_fan.js)
 
-For automatic recovery if the main script crashes:
+1. Go to **Scripts** → create new script named **Bathroom Fan Control**
+2. Paste the contents of `script1_fan.js`
+3. Enable **Start on boot**
+4. Save and start
 
-1. Create another new script, name it "Fan Control Watchdog"
-2. Paste the watchdog script code (see `fan-watchdog.js`)
-3. Update `MAIN_SCRIPT_ID` to match your main script's ID (check in Scripts list)
-4. ✅ Enable "Start on boot"
-5. Save and start the script
+### Step 5: Install Watchdog Script (script2_watchdog.js)
+
+1. Create another script named **Fan Control Watchdog**
+2. Paste the contents of `script2_watchdog.js`
+3. Verify `main_script_id: 1` matches the ID of your main script
+4. Enable **Start on boot**
+5. Save and start
+
+---
 
 ## Configuration
 
-Edit the `CONFIG` object at the top of the script:
+Edit the `CONFIG` object at the top of `script1_fan.js`:
+
 ```javascript
 let CONFIG = {
-  // Logic thresholds
-  spike_threshold:            3.0,   // % rise needed to auto turn ON
-  auto_return_threshold:      2.0,   // % above baseline to turn OFF (for auto/shower mode)
-  manual_runtime_seconds:     900,   // 15 minutes for manual mode (bathroom #2)
-  auto_max_runtime_seconds:   3600,  // Max 1 hour for auto mode (safety net)
-  baseline_update_interval:   300,   // Only update baseline every 5 minutes
-  dew_point_num_id:           205,   // number:205 - Calculated field T - (100-RH/5)
-  temperature_num_id:         206,   // number:206 - Temperature C
+  current_humidity_num_id:    200,   // Virtual component ID for bathroom humidity
+  temperature_num_id:         206,   // Virtual component ID for bathroom temperature
+  external_humidity_num_id:   207,   // Virtual component ID for outdoor humidity
+  external_temp_num_id:       208,   // Virtual component ID for outdoor temperature
+  dew_point_num_id:           205,   // Virtual component ID for dew point (reference)
+  fan_switch_id:              0,     // Switch ID controlling the fan
+
+  dp_shower_spike:            0.7,   // °C DP rise above baseline to trigger fan ON
+  dp_sanity_floor:            21.0,  // °C DP absolute floor to trigger fan ON (muggy override)
+  dp_stop_threshold:          1.5,   // °C above baseline — fan runs until DP drops below this
+  ah_efficiency_threshold:    0.4    // g/kg — minimum AH delta (indoor vs outdoor) to run fan
 };
 ```
 
-### Configuration Parameters
-
 | Parameter | Default | Description |
 |---|---|---|
-| `spike_threshold` | 3.0 | Humidity rise % required to trigger auto turn-ON |
-| `auto_return_threshold` | 2.0 | % above baseline before auto turn-OFF |
-| `dew_point_gap_threshold` | 7.0 | Max °C gap to confirm it is a shower |
-| `manual_runtime_seconds` | 900 | Duration of manual button press (15 min) |
-| `auto_max_runtime_seconds` | 3600 | Maximum runtime for auto mode (60 min safety) |
-| `baseline_update_interval` | 300 | Seconds between baseline updates (5 min) |
+| `dp_shower_spike` | 0.7°C | DP rise from baseline to detect a shower |
+| `dp_sanity_floor` | 21.0°C | Absolute DP trigger for very muggy conditions |
+| `dp_stop_threshold` | 1.5°C | How far above baseline DP must drop before fan stops |
+| `ah_efficiency_threshold` | 0.4 g/kg | Minimum indoor/outdoor AH difference to justify running fan |
 
-## Usage Examples
+---
 
-### Example 1: Morning Shower
+## Console Log Reference
+
+All log output is visible via **Scripts → Console** in the Shelly web interface.
+
+### Log Levels
+
+| Level | When |
+|---|---|
+| `[INIT]` | Script startup — sensor readings, thresholds, fan state |
+| `[TRIGGER]` | Fan turned ON — reason and metrics |
+| `[STOP]` | Fan turned OFF by script — DP values at stop |
+| `[POLL]` | Every 2 mins while fan is ON — current DP vs stop target |
+| `[POLL-STOP]` | Fan turned OFF by poll timer (sensor went quiet) |
+| `[STATUS]` | Every 10 mins — full snapshot of all conditions |
+| `[WATCHDOG]` | Only on problems — script stopped or sensor offline |
+
+### Example Output
+
+**Startup:**
 ```
-Initial: Baseline 45%, Fan OFF
-07:00 - Shower starts, humidity rises to 48% (+3%) → AUTO FAN ON
-07:05 - Humidity peaks at 85%
-07:15 - Shower ends, humidity dropping
-07:20 - Humidity drops to 47% (≤ 45% + 2%) → AUTO FAN OFF
-Total runtime: 20 minutes
-```
-
-### Example 2: Bathroom Break
-```
-Initial: Baseline 50%, Fan OFF
-10:00 - User presses button → MANUAL FAN ON (15 min timer)
-10:15 - Timer expires → AUTO FAN OFF
-Total runtime: 15 minutes (regardless of humidity)
-```
-
-### Example 3: High Ambient Humidity
-```
-Initial: Baseline 60%, Fan OFF
-06:00 - Ambient humidity slowly rises to 63% over 20 minutes
-       (No spike detected - baseline updates gradually)
-06:20 - Shower starts, humidity jumps to 67% (+4% from current baseline)
-        → AUTO FAN ON
-```
-
-## Monitoring & Debugging
-
-### Event Log
-Enable event logging on `text:200` to see all major events:
-- Script initialization
-- Manual ON/OFF events
-- Auto spike detection
-- Auto turn-off triggers
-- Error messages
-
-### Console Logs
-Access via Shelly web interface → Scripts → [Your Script] → Console
-
-**Log Levels:**
-- `[INFO]` - Important state changes
-- `[ALERT]` - Fan ON/OFF triggers
-- `[DEBUG]` - Periodic humidity readings (every sensor update)
-- `[ERROR]` - Failures or issues
-- `[BASELINE]` - Baseline update events
-- `[AUTO OFF CHECK]` - Turn-off condition monitoring
-
-**Example Console Output:**
-```
-2026-02-14 06:03:00 [ALERT] SPIKE! 70.7→74.7% (+4.0%) → AUTO FAN ON
-2026-02-14 06:04:00 [DEBUG] H:76.5% B:70.7% S:74.7% Fan:ON Timer:NO
-2026-02-14 06:04:00 [AUTO OFF CHECK] Current:76.5% Target:72.7% Elapsed:0.9min
-2026-02-14 06:06:00 [ALERT] Humidity normalized: 71.4% ≤ 72.7% → AUTO FAN OFF
+[INIT] Script Started Successfully
+[INIT] Current Bathroom: 18C / 79% (DP: 14.8C)
+[INIT] Current Outside:  16C / 90.7%
+[INIT] Starting AH Delta: 0.53g
+[INIT] Thresholds: Spike >0.7C | Stop <baseline+1.5C | AH-Delta >0.4g
+[INIT] Fan is currently: OFF
 ```
 
-### Component Status
-Monitor virtual components to see current state:
-- **number:200** (Current Humidity) - Latest sensor reading
-- **number:201** (Baseline Humidity) - Reference point for spike detection
-- **number:202** (Fan Start Humidity) - Humidity when fan turned ON
-- **number:204** (Auto Start Time) - Unix timestamp (0 = not in auto mode)
-- **text:200** (Last Updated) - Most recent event message
+**Restart while fan running:**
+```
+[INIT] Fan is currently: ON | Running ~12 mins (auto-off in 48 mins)
+```
+
+**Shower detected:**
+```
+--- SENSOR UPDATE RECEIVED ---
+Values  | DP: 16.20C | AH-In: 14.21g | AH-Out: 12.37g
+Metrics | Total Spike: 1.40C | Jump: 0.20C | AH-Delta: 1.84
+Status  | Spike:true | Muggy:false | Efficient:true | Fan:OFF
+[TRIGGER] Fan ON [SHOWER SPIKE] DP:+1.4 AH-D:1.8
+```
+
+**Fan running — sensor update:**
+```
+Status  | Spike:true | Muggy:false | Efficient:true | Fan:ON | Stop when DP <16.3C (now 15.9C, delta +1.10C of 1.5C needed)
+```
+
+**Fan running — poll check:**
+```
+[POLL] Fan still ON | Stop when DP <16.3C (now 15.8C, delta +1.00C of 1.5C needed)
+```
+
+**Fan off:**
+```
+[STOP] Fan OFF. Air stabilized. DP:15.1C (baseline+0.30C)
+```
+
+**Periodic status (fan off):**
+```
+[STATUS] Bath:18.1C/79% DP:14.8C | Out:16C/90.7% | AH-Delta:0.53g | Baseline:14.8C | Fan:OFF
+```
+
+---
+
+## Watchdog (script2_watchdog.js)
+
+The watchdog runs independently and checks every 30 seconds that:
+1. The main fan script is still running — restarts it if stopped
+2. The H&T sensor is still sending data — restarts the main script if no update received in 90 minutes
+
+The watchdog is **silent when healthy** — it only logs when it takes action or detects a problem.
+
+```javascript
+let CONFIG = {
+  main_script_id:     1,
+  humidity_id:        200,
+  temperature_id:     206,
+  check_interval:     30000,   // Check every 30 seconds
+  max_stale_sec:      5400,    // Alert after 90 minutes without sensor update
+  startup_grace_sec:  3600     // 60 minute grace period after boot
+};
+```
+
+---
 
 ## Troubleshooting
 
-### Fan doesn't turn on automatically
-1. Check `number:200` is updating when humidity changes
-   - Verify H&T sensor action URL is correct
-   - Check H&T sensor action is enabled
-2. Check baseline value in `number:201`
-   - Must be lower than current humidity by spike_threshold amount
-3. Check console logs for `[ALERT] SPIKE!` messages
-4. Verify spike_threshold is appropriate (try lowering to 2.0 for testing)
+### Fan doesn't turn on
+- Check `number:200` is updating when humidity changes — verify H&T action URLs
+- Check console for sensor update trace — is `Efficient:false` blocking the trigger?
+- If outdoor humidity is very high, AH delta may be below `ah_efficiency_threshold` — try lowering to `0.3`
+- Check baseline DP in console — if it was set during elevated conditions, spike detection needs a larger rise
 
-### Fan doesn't turn off
-1. Check if in manual mode (Timer:YES in debug logs)
-   - Manual mode runs for full duration, won't turn off early
-2. Check `number:204` (Auto Start Time)
-   - Should be > 0 if in auto mode
-   - If 0, auto turn-off won't work
-3. Verify `number:203` and `number:204` max value is 9999999999 (not 100!)
-4. Check console for `[AUTO OFF CHECK]` messages showing target humidity
+### Fan turns off too early
+- Increase `dp_stop_threshold` (e.g. `2.0`)
+- Check if sensor is updating frequently enough — if humidity plateaus below 1% change, poll timer handles this every 2 mins
 
-### "Too many calls in progress" errors
-- This should be resolved in current version with debouncing and delayed baseline updates
-- If it occurs, check console to see which operation triggered it
-- Watchdog script will automatically restart if crash occurs
+### Fan runs too long
+- Decrease `dp_stop_threshold` (e.g. `1.0`)
+- Shelly hardware auto-off timer is the hard backstop at 1 hour
 
-### Timer doesn't work in manual mode
-- Verify switch:0 has "Auto off" checkbox **enabled** in device settings
-- This is required for `toggle_after` parameter to function
-- Value doesn't matter (script overrides it), but checkbox must be checked
+### No outdoor sensor data
+- If outdoor sensor is unavailable, the script falls back to using indoor AH for both sides — `ahDelta` will be 0 and `isEfficient` will be false, meaning the fan won't trigger automatically
+- Ensure outdoor sensor actions are configured and firing
 
-### Baseline keeps updating too frequently
-- Check `number:203` max value is 9999999999 (not 100)
-- Timestamps need large max values to store properly
-- Script should show `[BASELINE] Skipping, Xs remaining` between updates
+### Watchdog keeps restarting the script
+- Check `max_stale_sec` — 90 minutes is relaxed enough for normal H&T G3 sleep cycles
+- If sensor is genuinely going offline, check H&T battery level and WiFi signal
 
-## Known Limitations
-
-1. **H&T Sensor Update Frequency**: Sensor only sends updates on ±1% humidity change or periodic interval. Fast humidity changes < 1% won't trigger immediate updates.
-
-2. **Network Latency**: HTTP action from H&T to Shelly 1 has small delay. Spike detection happens ~1-2 seconds after actual humidity change.
-
-3. **Single Sensor**: Script assumes one humidity sensor. Multiple sensors would require code modifications.
-
-4. **No Learning**: Baseline resets every 5 minutes to current value when fan is OFF. Doesn't learn daily/seasonal patterns.
-
-## Advanced Customization
-
-### Adjust for Different Room Sizes
-Larger bathrooms may need:
-- Higher `spike_threshold` (slower humidity rise)
-- Lower `auto_return_threshold` (takes longer to clear)
-- Longer `auto_max_runtime_seconds`
-
-### Adjust for Climate
-High ambient humidity areas:
-- May want higher `spike_threshold` to avoid false triggers
-- Increase `baseline_update_interval` to prevent chasing slow rises
-
-### Multiple Sensors
-To use multiple humidity sensors:
-1. Create additional number components (e.g., 210, 211)
-2. Add status handlers for each sensor
-3. Average values or use highest reading
-4. Modify spike detection logic accordingly
-
-## License
-
-MIT License - feel free to modify and distribute
-
-## Credits
-
-Developed through iterative testing and debugging. Special thanks to the Shelly scripting community and documentation.
-
-## Contributing
-
-Issues and pull requests welcome! Please test thoroughly before submitting.
+---
 
 ## Version History
 
-- **v1.0** (2026-02-14) - Initial release
-  - Auto spike detection
-  - Manual timer mode  
-  - Baseline tracking with update interval
-  - Debounce protection
-  - Comprehensive logging
+- **v2.0** (2026-02-28) — Full rewrite
+  - Replaced raw RH% spike detection with dew point based detection
+  - Added absolute humidity efficiency gate (indoor vs outdoor AH comparison)
+  - Added outdoor sensor support
+  - Removed manual button mode
+  - Removed code-level max runtime — delegated to Shelly hardware auto-off timer
+  - Added periodic poll timer (2 min) for stop condition when sensor goes quiet
+  - Added periodic status log (10 min)
+  - Improved restart logging — shows fan runtime from hardware timer
+  - Watchdog simplified — silent when healthy, logs on problems only
+
+- **v1.0** (2026-02-14) — Initial release
+  - RH% spike detection
+  - Manual timer mode
+  - Baseline tracking
   - Watchdog support
-
-## Support
-
-For issues or questions:
-1. Check troubleshooting section above
-2. Review console logs for error messages
-3. Verify all virtual components are created correctly
-4. Check Shelly firmware is up to date
