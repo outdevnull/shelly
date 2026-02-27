@@ -124,7 +124,24 @@ Timer.set(120000, true, function() {
   }
 });
 
-// === 4. BASELINE UPDATER ===
+// === 4. PERIODIC STATUS LOG ===
+Timer.set(600000, true, function() {
+  let t = Shelly.getComponentStatus("number:" + CONFIG.temperature_num_id);
+  let h = Shelly.getComponentStatus("number:" + CONFIG.current_humidity_num_id);
+  let et = Shelly.getComponentStatus("number:" + CONFIG.external_temp_num_id);
+  let eh = Shelly.getComponentStatus("number:" + CONFIG.external_humidity_num_id);
+  let sw = Shelly.getComponentStatus("switch:" + CONFIG.fan_switch_id);
+  if (!t || !h) return;
+
+  let nowDP = calcDP(t.value, h.value);
+  let inAH = calcAH(t.value, h.value);
+  let outAH = (et && eh) ? calcAH(et.value, eh.value) : inAH;
+  let fanOn = (sw && sw.output === true);
+
+  log("STATUS", "Bath:" + t.value + "C/" + h.value + "% DP:" + nowDP.toFixed(1) + "C | Out:" + (et?et.value:"N/A") + "C/" + (eh?eh.value:"N/A") + "% | AH-Delta:" + (inAH-outAH).toFixed(2) + "g | Baseline:" + dpBaseline.toFixed(1) + "C | Fan:" + (fanOn?"ON":"OFF"));
+});
+
+// === 5. BASELINE UPDATER ===
 Timer.set(300000, true, function() {
   let sw = Shelly.getComponentStatus("switch:" + CONFIG.fan_switch_id);
   if (sw && !sw.output) {
