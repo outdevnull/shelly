@@ -1,6 +1,6 @@
 # Shelly Bathroom Fan Humidity Control
 
-Intelligent bathroom fan control using dew point and absolute humidity calculations to detect showers and manage fan runtime. Runs on a Shelly switch device with an external Shelly H&T G3 sensor.
+Intelligent bathroom fan control using dew point and absolute humidity calculations to detect showers and manage fan runtime. Runs on a Shelly 1 Gen3 switch device with an internal and external Shelly H&T G3 sensor.
 
 ## How It Works
 
