@@ -103,7 +103,28 @@ Timer.set(2000, false, function() {
   }
 });
 
-// === 3. BASELINE UPDATER ===
+// === 3. PERIODIC STOP CONDITION POLL ===
+Timer.set(120000, true, function() {
+  let sw = Shelly.getComponentStatus("switch:" + CONFIG.fan_switch_id);
+  if (!sw || !sw.output) return;
+
+  let t = Shelly.getComponentStatus("number:" + CONFIG.temperature_num_id);
+  let h = Shelly.getComponentStatus("number:" + CONFIG.current_humidity_num_id);
+  if (!t || !h) return;
+
+  let nowDP = calcDP(t.value, h.value);
+  let spikeVal = nowDP - dpBaseline;
+  let stopTarget = dpBaseline + CONFIG.dp_stop_threshold;
+
+  if (nowDP < stopTarget) {
+    log("POLL-STOP", "Fan OFF. Air stabilized. DP:" + nowDP.toFixed(1) + "C (baseline+" + spikeVal.toFixed(2) + "C)");
+    Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: false });
+  } else {
+    log("POLL", "Fan still ON | Stop when DP <" + stopTarget.toFixed(1) + "C (now " + nowDP.toFixed(1) + "C, delta +" + spikeVal.toFixed(2) + "C of " + CONFIG.dp_stop_threshold + "C needed)");
+  }
+});
+
+// === 4. BASELINE UPDATER ===
 Timer.set(300000, true, function() {
   let sw = Shelly.getComponentStatus("switch:" + CONFIG.fan_switch_id);
   if (sw && !sw.output) {
