@@ -49,7 +49,7 @@ let runCheck = function() {
         Timer.set(2000, false, function() { Shelly.call("Script.Start", {id: CONFIG.main_script_id}); });
       });
     } else if (now - lastLog > 300) {
-      print("[WATCHDOG] Sensor Alive (Fresh data " + Math.floor(sensorAge/60) + "m ago)");
+      //print("[WATCHDOG] Sensor Alive (Fresh data " + Math.floor(sensorAge/60) + "m ago)");
       lastLog = now;
     }
   });
