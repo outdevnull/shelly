@@ -29,8 +29,8 @@ The Shelly hardware auto-off timer (set to 1 hour) acts as the hard safety cutof
 
 ### Hardware
 - Shelly switch device (e.g. Shelly 1 Gen 3)
-- Shelly H&T G3 humidity & temperature sensor
-- Outdoor weather station or sensor (for AH efficiency comparison)
+- Shelly H&T G3 — mounted inside the bathroom (humidity & temperature)
+- Shelly H&T G3 — mounted outside (used for outdoor AH efficiency comparison)
 
 ### Virtual Components on Shelly Switch
 
@@ -55,28 +55,35 @@ Navigate to your device → **Components** → **Virtual Components** and create
 
 This is the hard safety cutoff. The script does not manage its own maximum runtime timer.
 
-### Step 2: Configure H&T G3 Sensor Actions
+### Step 2: Configure Bathroom H&T G3 Sensor Actions
 
-On your Shelly H&T G3:
+On your **bathroom** Shelly H&T G3:
 
 1. Go to **Actions** → create action with trigger **Humidity change**:
 ```
-http://YOUR_SHELLY_IP/rpc/number.set?id=200&value=${ev.rh}
+http://SHELLY_1_GEN3_IP/rpc/number.set?id=200&value=${ev.rh}
 ```
 2. Create action with trigger **Temperature change**:
 ```
-http://YOUR_SHELLY_IP/rpc/number.set?id=206&value=${ev.tC}
+http://SHELLY_1_GEN3_IP/rpc/number.set?id=206&value=${ev.tC}
 ```
 
 The H&T G3 will push updates on every 1% humidity change and every 0.5°C temperature change.
 
-### Step 3: Configure Outdoor Sensor Actions
+### Step 3: Configure Outdoor H&T G3 Sensor Actions
 
-Point your outdoor sensor actions at:
+On your **outdoor** Shelly H&T G3:
+
+1. Go to **Actions** → create action with trigger **Humidity change**:
 ```
-http://YOUR_SHELLY_IP/rpc/number.set?id=207&value=${humidity}
-http://YOUR_SHELLY_IP/rpc/number.set?id=208&value=${temperature}
+http://SHELLY_1_GEN3_IP/rpc/number.set?id=207&value=${ev.rh}
 ```
+2. Create action with trigger **Temperature change**:
+```
+http://SHELLY_1_GEN3_IP/rpc/number.set?id=208&value=${ev.tC}
+```
+
+Replace `SHELLY_1_GEN3_IP` with the IP address of your Shelly 1 Gen 3 switch device in all four URLs above.
 
 ### Step 4: Install Main Script (script1_fan.js)
 
