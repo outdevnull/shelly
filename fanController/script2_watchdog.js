@@ -1,6 +1,6 @@
 // === Smart "Either-Or" Watchdog ===
 let CONFIG = {
-  main_script_id: 1, 
+  main_script_id: 1,
   humidity_id: 200,    // number:200
   temperature_id: 206, // number:206
   check_interval: 30000,
@@ -9,7 +9,6 @@ let CONFIG = {
 };
 
 let watchdogStart = Math.floor(Date.now() / 1000);
-let lastLog = 0;
 
 let runCheck = function() {
   let now = Math.floor(Date.now() / 1000);
@@ -23,24 +22,18 @@ let runCheck = function() {
     }
 
     // 1. Startup Grace Period
-    if (uptime < CONFIG.startup_grace_sec) {
-      if (now - lastLog > 300) {
-        print("[WATCHDOG] Grace Period: " + Math.floor((CONFIG.startup_grace_sec-uptime)/60) + "m remaining");
-        lastLog = now;
-      }
-      return;
-    }
+    if (uptime < CONFIG.startup_grace_sec) return;
 
     // 2. Check Data Health
     let hStat = Shelly.getComponentStatus("number:" + CONFIG.humidity_id);
     let tStat = Shelly.getComponentStatus("number:" + CONFIG.temperature_id);
-    
+
     let hAge = now - (hStat.last_update_ts || 0);
     let tAge = now - (tStat.last_update_ts || 0);
-    
+
     // THE FIX: We only care about the FRESHEST data point.
     // If temp updated 2 mins ago but humidity hasn't moved in 2 hours, the sensor is ALIVE.
-    let sensorAge = (hAge < tAge) ? hAge : tAge; 
+    let sensorAge = (hAge < tAge) ? hAge : tAge;
 
     if (sensorAge > CONFIG.max_stale_sec) {
       print("[WATCHDOG] SENSOR OFFLINE (No update from either for " + Math.floor(sensorAge/60) + "m). Restarting...");
@@ -48,12 +41,9 @@ let runCheck = function() {
       Shelly.call("Script.Stop", {id: CONFIG.main_script_id}, function() {
         Timer.set(2000, false, function() { Shelly.call("Script.Start", {id: CONFIG.main_script_id}); });
       });
-    } else if (now - lastLog > 300) {
-      //print("[WATCHDOG] Sensor Alive (Fresh data " + Math.floor(sensorAge/60) + "m ago)");
-      lastLog = now;
     }
   });
 };
 
 Timer.set(CONFIG.check_interval, true, runCheck);
-print("Watchdog: Monitoring life signals from Temp & Humidity...");
+print("[WATCHDOG] Started. Monitoring life signals from Temp & Humidity...");
