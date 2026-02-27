@@ -10,8 +10,9 @@ let CONFIG = {
   
   // --- TUNED FOR BATTERY SENSOR LAG ---
   dp_shower_spike:            0.7,   
-  dp_sanity_floor:            21.0,  
-  ah_efficiency_threshold:    0.8,   
+  dp_sanity_floor:            21.0,
+  dp_stop_threshold:          1.5,  
+  ah_efficiency_threshold:    0.4,   
   auto_max_runtime_seconds:   3600   
 };
 
@@ -68,7 +69,7 @@ Shelly.addStatusHandler(function(event) {
     }
   } else {
     let now = Shelly.getComponentStatus("sys").unixtime;
-    if (nowDP < (dpBaseline + 0.5) || (now - autoStartTime) > CONFIG.auto_max_runtime_seconds) {
+    if (nowDP < (dpBaseline + CONFIG.dp_stop_threshold) || (now - autoStartTime) > CONFIG.auto_max_runtime_seconds) {
       log("STOP", "Fan OFF. Air stabilized.");
       Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: false });
     }
