@@ -92,7 +92,7 @@ Timer.set(2000, false, function() {
     log("INIT", "Current Bathroom: " + t.value + "C / " + h.value + "% (DP: " + dpBaseline.toFixed(1) + "C)");
     log("INIT", "Current Outside: " + (et?et.value:"N/A") + "C / " + (eh?eh.value:"N/A") + "%");
     log("INIT", "Starting AH Delta: " + (startInAH - startOutAH).toFixed(2) + "g");
-    log("INIT", "Thresholds: Spike >" + CONFIG.dp_shower_spike + "C | AH-Delta >" + CONFIG.ah_efficiency_threshold + "g");
+    log("INIT", "Thresholds: Spike >" + CONFIG.dp_shower_spike + "C | Stop <baseline+" + CONFIG.dp_stop_threshold + "C | AH-Delta >" + CONFIG.ah_efficiency_threshold + "g");
   } else {
     log("WARNING", "Init failed: Sensors not ready. Waiting for first update...");
   }
