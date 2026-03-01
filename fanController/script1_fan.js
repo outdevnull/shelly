@@ -9,18 +9,35 @@ let CONFIG = {
   dew_point_num_id:           205,
   fan_switch_id:              0,
 
-  dp_shower_spike:            0.7,
+  dp_shower_spike:            0.7,   // °C rise to trigger fan ON normally
+  dp_retrigger_threshold:     2.2,   // °C rise required to re-trigger within cooldown window
+  dp_retrigger_cooldown:      300,   // seconds after fan OFF before normal sensitivity resumes
   dp_sanity_floor:            21.0,
   dp_stop_threshold:          1.5,
-  ah_efficiency_threshold:    0.4
+  ah_efficiency_threshold:    0.4,
+  mqtt_topic_prefix:          "shelly/bathroom-fan"
 };
 
 let dpBaseline = 0;
 let lastReportedDP = 0;
+let fanJustStopped = false;
+let tickCount = 0;
 
 function calcAH(t, rh) { return (6.112 * Math.exp((17.67 * t) / (t + 243.5)) * rh * 2.1674) / (273.15 + t); }
 function calcDP(t, rh) { return t - ((100 - rh) / 5); }
-function log(level, msg) { print("[" + level + "] " + msg); }
+function log(level, msg) {
+  print("[" + level + "] " + msg);
+  if (MQTT.isConnected()) MQTT.publish(CONFIG.mqtt_topic_prefix + "/" + level, msg, 0, false);
+}
+
+function logFanOff(source, nowDP, nowTemp, nowHum, extTStat, extHStat) {
+  let inAH = calcAH(nowTemp, nowHum);
+  let outAH = (extTStat && extHStat) ? calcAH(extTStat.value, extHStat.value) : null;
+  let outStr = (extTStat && extHStat) ? extTStat.value + "C/" + extHStat.value + "% AH:" + outAH.toFixed(2) + "g" : "N/A";
+  log(source, "Fan OFF. Air stabilized. | Bath:" + nowTemp + "C/" + nowHum + "% DP:" + nowDP.toFixed(1) + "C AH:" + inAH.toFixed(2) + "g | Out:" + outStr + " | Baseline:" + dpBaseline.toFixed(1) + "C (delta+" + (nowDP - dpBaseline).toFixed(2) + "C)");
+  fanJustStopped = true;
+  Timer.set(CONFIG.dp_retrigger_cooldown * 1000, false, function() { fanJustStopped = false; });
+}
 
 // === 1. SENSOR UPDATE HANDLER ===
 Shelly.addStatusHandler(function(event) {
@@ -46,7 +63,8 @@ Shelly.addStatusHandler(function(event) {
   let spikeVal = nowDP - dpBaseline;
   let jumpVal = (lastReportedDP > 0) ? (nowDP - lastReportedDP) : 0;
 
-  let isSpiking = spikeVal > CONFIG.dp_shower_spike;
+  let spikeNeeded = fanJustStopped ? CONFIG.dp_retrigger_threshold : CONFIG.dp_shower_spike;
+  let isSpiking = spikeVal > spikeNeeded;
   let isTropical = nowDP > CONFIG.dp_sanity_floor;
   let isEfficient = ahDelta > CONFIG.ah_efficiency_threshold;
 
@@ -54,7 +72,9 @@ Shelly.addStatusHandler(function(event) {
   print("--- SENSOR UPDATE RECEIVED ---");
   print("Values  | DP: " + nowDP.toFixed(2) + "C | AH-In: " + inAH.toFixed(2) + "g | AH-Out: " + outAH.toFixed(2) + "g");
   print("Metrics | Total Spike: " + spikeVal.toFixed(2) + "C | Jump: " + jumpVal.toFixed(2) + "C | AH-Delta: " + ahDelta.toFixed(2));
-  let fanStatus = fanOn ? "ON | Stop when DP <" + (dpBaseline + CONFIG.dp_stop_threshold).toFixed(1) + "C (now " + nowDP.toFixed(1) + "C, delta +" + spikeVal.toFixed(2) + "C of " + CONFIG.dp_stop_threshold + "C needed)" : "OFF";
+  let fanStatus = fanOn
+    ? "ON | Stop when DP <" + (dpBaseline + CONFIG.dp_stop_threshold).toFixed(1) + "C (now " + nowDP.toFixed(1) + "C, delta +" + spikeVal.toFixed(2) + "C of " + CONFIG.dp_stop_threshold + "C needed)"
+    : "OFF" + (fanJustStopped ? " [COOLDOWN - retrigger needs DP:+" + CONFIG.dp_retrigger_threshold + "C, currently +" + spikeVal.toFixed(2) + "C]" : "");
   print("Status  | Spike:" + isSpiking + " | Muggy:" + isTropical + " | Efficient:" + isEfficient + " | Fan:" + fanStatus);
 
   lastReportedDP = nowDP;
@@ -62,12 +82,14 @@ Shelly.addStatusHandler(function(event) {
   if (!fanOn) {
     if ((isSpiking || isTropical) && isEfficient) {
       let reason = isSpiking ? "SHOWER SPIKE" : "MUGGY OVERRIDE";
-      log("TRIGGER", "Fan ON [" + reason + "] DP:+" + spikeVal.toFixed(1) + " AH-D:" + ahDelta.toFixed(1));
+      let retriggered = fanJustStopped ? " [RETRIGGER]" : "";
+      log("TRIGGER", "Fan ON [" + reason + retriggered + "] DP:+" + spikeVal.toFixed(1) + " AH-D:" + ahDelta.toFixed(1));
+      fanJustStopped = false;
       Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: true });
     }
   } else {
     if (nowDP < (dpBaseline + CONFIG.dp_stop_threshold)) {
-      log("STOP", "Fan OFF. Air stabilized. DP:" + nowDP.toFixed(1) + "C (baseline+" + (nowDP - dpBaseline).toFixed(1) + "C)");
+      logFanOff("STOP", nowDP, nowTemp, nowHum, extTStat, extHStat);
       Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: false });
     }
   }
@@ -91,7 +113,7 @@ Timer.set(2000, false, function() {
     log("INIT", "Current Bathroom: " + t.value + "C / " + h.value + "% (DP: " + dpBaseline.toFixed(1) + "C)");
     log("INIT", "Current Outside:  " + (et ? et.value : "N/A") + "C / " + (eh ? eh.value : "N/A") + "%");
     log("INIT", "Starting AH Delta: " + (startInAH - startOutAH).toFixed(2) + "g");
-    log("INIT", "Thresholds: Spike >" + CONFIG.dp_shower_spike + "C | Stop <baseline+" + CONFIG.dp_stop_threshold + "C | AH-Delta >" + CONFIG.ah_efficiency_threshold + "g");
+    log("INIT", "Thresholds: Spike >" + CONFIG.dp_shower_spike + "C | Retrigger >" + CONFIG.dp_retrigger_threshold + "C (" + (CONFIG.dp_retrigger_cooldown / 60) + "min cooldown) | Stop <baseline+" + CONFIG.dp_stop_threshold + "C | AH-Delta >" + CONFIG.ah_efficiency_threshold + "g");
     let fanMsg = "OFF";
     if (fanOn) {
       let elapsed = (sw.timer_started_at !== undefined) ? (Shelly.getComponentStatus("sys").unixtime - sw.timer_started_at) : -1;
@@ -103,29 +125,9 @@ Timer.set(2000, false, function() {
   }
 });
 
-// === 3. PERIODIC STOP CONDITION POLL ===
+// === 3. COMBINED 2-MINUTE TICK (Stop Poll + Baseline Update + Periodic Status) ===
 Timer.set(120000, true, function() {
-  let sw = Shelly.getComponentStatus("switch:" + CONFIG.fan_switch_id);
-  if (!sw || !sw.output) return;
-
-  let t = Shelly.getComponentStatus("number:" + CONFIG.temperature_num_id);
-  let h = Shelly.getComponentStatus("number:" + CONFIG.current_humidity_num_id);
-  if (!t || !h) return;
-
-  let nowDP = calcDP(t.value, h.value);
-  let spikeVal = nowDP - dpBaseline;
-  let stopTarget = dpBaseline + CONFIG.dp_stop_threshold;
-
-  if (nowDP < stopTarget) {
-    log("POLL-STOP", "Fan OFF. Air stabilized. DP:" + nowDP.toFixed(1) + "C (baseline+" + spikeVal.toFixed(2) + "C)");
-    Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: false });
-  } else {
-    log("POLL", "Fan still ON | Stop when DP <" + stopTarget.toFixed(1) + "C (now " + nowDP.toFixed(1) + "C, delta +" + spikeVal.toFixed(2) + "C of " + CONFIG.dp_stop_threshold + "C needed)");
-  }
-});
-
-// === 4. PERIODIC STATUS LOG ===
-Timer.set(600000, true, function() {
+  tickCount++;
   let t = Shelly.getComponentStatus("number:" + CONFIG.temperature_num_id);
   let h = Shelly.getComponentStatus("number:" + CONFIG.current_humidity_num_id);
   let et = Shelly.getComponentStatus("number:" + CONFIG.external_temp_num_id);
@@ -138,15 +140,23 @@ Timer.set(600000, true, function() {
   let outAH = (et && eh) ? calcAH(et.value, eh.value) : inAH;
   let fanOn = (sw && sw.output === true);
 
-  log("STATUS", "Bath:" + t.value + "C/" + h.value + "% DP:" + nowDP.toFixed(1) + "C | Out:" + (et?et.value:"N/A") + "C/" + (eh?eh.value:"N/A") + "% | AH-Delta:" + (inAH-outAH).toFixed(2) + "g | Baseline:" + dpBaseline.toFixed(1) + "C | Fan:" + (fanOn?"ON":"OFF"));
-});
+  if (fanOn) {
+    // --- Stop condition poll ---
+    let spikeVal = nowDP - dpBaseline;
+    let stopTarget = dpBaseline + CONFIG.dp_stop_threshold;
+    if (nowDP < stopTarget) {
+      logFanOff("POLL-STOP", nowDP, t.value, h.value, et, eh);
+      Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: false });
+    } else {
+      log("POLL", "Fan still ON | Stop when DP <" + stopTarget.toFixed(1) + "C (now " + nowDP.toFixed(1) + "C, delta +" + spikeVal.toFixed(2) + "C of " + CONFIG.dp_stop_threshold + "C needed)");
+    }
+  } else if (!fanJustStopped) {
+    // --- Baseline update (only when fan off and not in cooldown) ---
+    dpBaseline = nowDP;
+  }
 
-// === 5. BASELINE UPDATER ===
-Timer.set(300000, true, function() {
-  let sw = Shelly.getComponentStatus("switch:" + CONFIG.fan_switch_id);
-  if (sw && !sw.output) {
-    let t = Shelly.getComponentStatus("number:" + CONFIG.temperature_num_id);
-    let h = Shelly.getComponentStatus("number:" + CONFIG.current_humidity_num_id);
-    if (t && h) dpBaseline = calcDP(t.value, h.value);
+  // --- Status log every 5 ticks (10 mins) ---
+  if (tickCount % 5 === 0) {
+    log("STATUS", "Bath:" + t.value + "C/" + h.value + "% DP:" + nowDP.toFixed(1) + "C | Out:" + (et?et.value:"N/A") + "C/" + (eh?eh.value:"N/A") + "% | AH-Delta:" + (inAH-outAH).toFixed(2) + "g | Baseline:" + dpBaseline.toFixed(1) + "C | Fan:" + (fanOn?"ON":"OFF") + (fanJustStopped?" [COOLDOWN]":""));
   }
 });
