@@ -13,14 +13,16 @@ let CONFIG = {
   dp_retrigger_threshold:     2.2,   // °C rise required to re-trigger within cooldown window
   dp_retrigger_cooldown:      300,   // seconds after fan OFF before normal sensitivity resumes
   dp_sanity_floor:            21.0,
-  dp_stop_threshold:          1.5,
+  dp_stop_threshold:          2.0,
   ah_efficiency_threshold:    0.4,
+  dp_min_run_time:            240,   // seconds minimum fan run before stop condition is checked
   mqtt_topic_prefix:          "shelly/bathroom-fan"
 };
 
 let dpBaseline = 0;
 let lastReportedDP = 0;
 let fanJustStopped = false;
+let fanStartTime = 0;
 let tickCount = 0;
 
 function calcAH(t, rh) { return (6.112 * Math.exp((17.67 * t) / (t + 243.5)) * rh * 2.1674) / (273.15 + t); }
@@ -85,10 +87,14 @@ Shelly.addStatusHandler(function(event) {
       let retriggered = fanJustStopped ? " [RETRIGGER]" : "";
       log("TRIGGER", "Fan ON [" + reason + retriggered + "] DP:+" + spikeVal.toFixed(1) + " AH-D:" + ahDelta.toFixed(1));
       fanJustStopped = false;
+      fanStartTime = Date.now();
       Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: true });
     }
   } else {
-    if (nowDP < (dpBaseline + CONFIG.dp_stop_threshold)) {
+    let runSecs = (Date.now() - fanStartTime) / 1000;
+    if (runSecs < CONFIG.dp_min_run_time) {
+      print("Status  | Min run time not reached (" + Math.round(runSecs) + "s of " + CONFIG.dp_min_run_time + "s)");
+    } else if (nowDP < (dpBaseline + CONFIG.dp_stop_threshold)) {
       logFanOff("STOP", nowDP, nowTemp, nowHum, extTStat, extHStat);
       Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: false });
     }
@@ -113,7 +119,7 @@ Timer.set(2000, false, function() {
     log("INIT", "Current Bathroom: " + t.value + "C / " + h.value + "% (DP: " + dpBaseline.toFixed(1) + "C)");
     log("INIT", "Current Outside:  " + (et ? et.value : "N/A") + "C / " + (eh ? eh.value : "N/A") + "%");
     log("INIT", "Starting AH Delta: " + (startInAH - startOutAH).toFixed(2) + "g");
-    log("INIT", "Thresholds: Spike >" + CONFIG.dp_shower_spike + "C | Retrigger >" + CONFIG.dp_retrigger_threshold + "C (" + (CONFIG.dp_retrigger_cooldown / 60) + "min cooldown) | Stop <baseline+" + CONFIG.dp_stop_threshold + "C | AH-Delta >" + CONFIG.ah_efficiency_threshold + "g");
+    log("INIT", "Thresholds: Spike >" + CONFIG.dp_shower_spike + "C | Retrigger >" + CONFIG.dp_retrigger_threshold + "C (" + (CONFIG.dp_retrigger_cooldown / 60) + "min cooldown) | Stop <baseline+" + CONFIG.dp_stop_threshold + "C | Min run:" + CONFIG.dp_min_run_time + "s | AH-Delta >" + CONFIG.ah_efficiency_threshold + "g");
     let fanMsg = "OFF";
     if (fanOn) {
       let elapsed = (sw.timer_started_at !== undefined) ? (Shelly.getComponentStatus("sys").unixtime - sw.timer_started_at) : -1;
@@ -144,7 +150,10 @@ Timer.set(120000, true, function() {
     // --- Stop condition poll ---
     let spikeVal = nowDP - dpBaseline;
     let stopTarget = dpBaseline + CONFIG.dp_stop_threshold;
-    if (nowDP < stopTarget) {
+    let runSecs = (Date.now() - fanStartTime) / 1000;
+    if (runSecs < CONFIG.dp_min_run_time) {
+      log("POLL", "Fan ON | Min run time active (" + Math.round(runSecs) + "s of " + CONFIG.dp_min_run_time + "s) | DP:" + nowDP.toFixed(1) + "C");
+    } else if (nowDP < stopTarget) {
       logFanOff("POLL-STOP", nowDP, t.value, h.value, et, eh);
       Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: false });
     } else {
