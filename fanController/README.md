@@ -39,10 +39,13 @@ Navigate to your device → **Components** → **Virtual Components** and create
 | Type | ID | Name | Purpose |
 |---|---|---|---|
 | Number | 200 | Current Humidity | Receives bathroom humidity from H&T |
-| Number | 205 | Dew Point | Calculated reference field |
-| Number | 206 | Current Temperature | Receives bathroom temperature from H&T |
-| Number | 207 | External Humidity | Receives outdoor humidity |
-| Number | 208 | External Temperature | Receives outdoor temperature |
+| Number | 201 | Current Temperature | Receives bathroom temperature from H&T |
+| Number | 202 | Dew Point | Calculated reference field |
+| Number | 203 | External Humidity | Receives outdoor humidity |
+| Number | 204 | External Temperature | Receives outdoor temperature |
+| Number | 205 | External Dew Point | Calculated reference field |
+
+If user switches the shelly switch ON then the FAN must run continiously or until the Shelly Auto Off timer is reached
 
 ---
 
