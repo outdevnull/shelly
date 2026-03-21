@@ -2,31 +2,61 @@
 // Note: Hard safety cutoff is handled by Shelly's built-in auto-off timer (1hr).
 
 let CONFIG = {
+  room_name:                  "Bathroom",
   current_humidity_num_id:    200,
-  temperature_num_id:         206,
-  external_humidity_num_id:   207,
-  external_temp_num_id:       208,
-  dew_point_num_id:           205,
+  current_temperature_num_id: 201,
+  current_dew_point:          202,
+  external_humidity_num_id:   203,
+  external_temperature_num_id:204,
+  external_dew_point_num_id:  205,
+  moistureTrend_text_id:      200,
   fan_switch_id:              0,
 
-  dp_shower_spike:            0.7,   // °C rise to trigger fan ON normally
-  dp_retrigger_threshold:     2.2,   // °C rise required to re-trigger within cooldown window
-  dp_retrigger_cooldown:      300,   // seconds after fan OFF before normal sensitivity resumes
-  dp_sanity_floor:            21.0,
-  dp_stop_threshold:          2.0,
-  ah_efficiency_threshold:    0.4,
-  dp_min_run_time:            240,   // seconds minimum fan run before stop condition is checked
-  mqtt_topic_prefix:          "shelly/bathroom-fan"
+  mqtt_topic_prefix:          "shelly/bathroom-fan",
+  shower_spike: 0.80,      // surplus_trend trigger to start fan
+  dry_target: 0.40,        // avgMoistureSurplus target to stop fan
+  equilibrium_gap: 0.02,   // abs(surplus_trend) to detect stalled drying
+  equilibrium_max: 0.90,   // max avgMoistureSurplus to allow equilibrium shutoff
+  boost_cycles: 5,         // Extra minutes to run after reaching dry_target
+  quiet_hours_start: 22,  // 10pm
+  quiet_hours_end: 5,     // 5am
+  quiet_hours_avg_override: 0.5,  // allow trigger during quiet hours if avg is this high
+  moistureTrendSamples:  10 //keep the last 10 moisture samples for reference
 };
 
-let dpBaseline = 0;
-let lastReportedDP = 0;
-let fanJustStopped = false;
-let fanStartTime = 0;
+// Setup globals
+let fanOnReason = "";
+let boostCounter = 0;
+let int_humidity = 0;
+let int_temperature = 0;
+let int_AbsoluteHumidity = 0;
+let int_spread = 0;
+
+let ext_humidity = 0;
+let ext_temperature = 0;
+let ext_AbsoluteHumidity  = 0;
+
+let dryingPotential    = 0;
+let moistureSurplus    = 0;
+let avgMoistureSurplus = 0;
+let surplus_trend      = 0;
+
+let fan_switch_status = 0;
+let fan_output_status = 0;
+let fanOn = 0;
 let tickCount = 0;
 
-function calcAH(t, rh) { return (6.112 * Math.exp((17.67 * t) / (t + 243.5)) * rh * 2.1674) / (273.15 + t); }
-function calcDP(t, rh) { return t - ((100 - rh) / 5); }
+function calcAH(t, rh) {
+  const Psat = 6.1078 * Math.exp((17.625 * t) / (243.04 + t));
+  return (Psat * rh * 2.16679) / (273.15 + t);
+}
+
+function calcDP(t, rh) {
+  const b = 17.625;
+  const c = 243.04;
+  const gamma = (b * t / (c + t)) + Math.log(rh / 100);
+  return (c * gamma) / (b - gamma);
+}
 function log(level, msg) {
   print("[" + level + "] " + msg);
   if (MQTT.isConnected()) MQTT.publish(CONFIG.mqtt_topic_prefix + "/" + level, msg, 0, false);
@@ -46,126 +76,168 @@ Shelly.addStatusHandler(function(event) {
   if (event.component !== "number:" + CONFIG.current_humidity_num_id) return;
   if (typeof event.delta.value === "undefined") return;
 
-  let nowHum = event.delta.value;
-  let tempStat = Shelly.getComponentStatus("number:" + CONFIG.temperature_num_id);
-  let nowTemp = (tempStat) ? tempStat.value : 0;
-  let nowDP = calcDP(nowTemp, nowHum);
+  
+});
 
-  if (dpBaseline === 0) dpBaseline = nowDP;
 
-  let extHStat = Shelly.getComponentStatus("number:" + CONFIG.external_humidity_num_id);
-  let extTStat = Shelly.getComponentStatus("number:" + CONFIG.external_temp_num_id);
-  let outAH = (extHStat && extTStat) ? calcAH(extTStat.value, extHStat.value) : calcAH(nowTemp, nowHum);
-  let inAH = calcAH(nowTemp, nowHum);
-  let ahDelta = inAH - outAH;
-
-  let swStatus = Shelly.getComponentStatus("switch:" + CONFIG.fan_switch_id);
-  let fanOn = (swStatus && swStatus.output === true);
-
-  let spikeVal = nowDP - dpBaseline;
-  let jumpVal = (lastReportedDP > 0) ? (nowDP - lastReportedDP) : 0;
-
-  let spikeNeeded = fanJustStopped ? CONFIG.dp_retrigger_threshold : CONFIG.dp_shower_spike;
-  let isSpiking = spikeVal > spikeNeeded;
-  let isTropical = nowDP > CONFIG.dp_sanity_floor;
-  let isEfficient = ahDelta > CONFIG.ah_efficiency_threshold;
-
-  // --- FORENSIC TRACE ---
-  print("--- SENSOR UPDATE RECEIVED ---");
-  print("Values  | DP: " + nowDP.toFixed(2) + "C | AH-In: " + inAH.toFixed(2) + "g | AH-Out: " + outAH.toFixed(2) + "g");
-  print("Metrics | Total Spike: " + spikeVal.toFixed(2) + "C | Jump: " + jumpVal.toFixed(2) + "C | AH-Delta: " + ahDelta.toFixed(2));
-  let fanStatus = fanOn
-    ? "ON | Stop when DP <" + (dpBaseline + CONFIG.dp_stop_threshold).toFixed(1) + "C (now " + nowDP.toFixed(1) + "C, delta +" + spikeVal.toFixed(2) + "C of " + CONFIG.dp_stop_threshold + "C needed)"
-    : "OFF" + (fanJustStopped ? " [COOLDOWN - retrigger needs DP:+" + CONFIG.dp_retrigger_threshold + "C, currently +" + spikeVal.toFixed(2) + "C]" : "");
-  print("Status  | Spike:" + isSpiking + " | Muggy:" + isTropical + " | Efficient:" + isEfficient + " | Fan:" + fanStatus);
-
-  lastReportedDP = nowDP;
-
-  if (!fanOn) {
-    if ((isSpiking || isTropical) && isEfficient) {
-      let reason = isSpiking ? "SHOWER SPIKE" : "MUGGY OVERRIDE";
-      let retriggered = fanJustStopped ? " [RETRIGGER]" : "";
-      log("TRIGGER", "Fan ON [" + reason + retriggered + "] DP:+" + spikeVal.toFixed(1) + " AH-D:" + ahDelta.toFixed(1));
-      fanJustStopped = false;
-      fanStartTime = Date.now();
-      Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: true });
+function autoFanControl() {
+  // --- 1. SHOWER DETECTION (Auto-ON) ---
+  if (fan_output_status === false && surplus_trend > CONFIG.shower_spike) {
+    let hour = (new Date()).getHours();
+    let inQuietHours = (hour >= CONFIG.quiet_hours_start || hour < CONFIG.quiet_hours_end);
+    
+    if (inQuietHours && avgMoistureSurplus < CONFIG.quiet_hours_avg_override) {
+      log("STATUS", "Spike suppressed (quiet hours). avgMoistureSurplus: " + avgMoistureSurplus.toFixed(2) + "g.");
+      return;
     }
-  } else {
-    let runSecs = (Date.now() - fanStartTime) / 1000;
-    if (runSecs < CONFIG.dp_min_run_time) {
-      print("Status  | Min run time not reached (" + Math.round(runSecs) + "s of " + CONFIG.dp_min_run_time + "s)");
-    } else if (nowDP < (dpBaseline + CONFIG.dp_stop_threshold)) {
-      logFanOff("STOP", nowDP, nowTemp, nowHum, extTStat, extHStat);
-      Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: false });
+    log("ACTION", "Shower spike (" + surplus_trend.toFixed(2) + "g). Fan ON.");
+    fanOnReason = "Shower spike (" + surplus_trend.toFixed(2) + "g)";
+    boostCounter = 0;
+    Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: true });
+    return;
+  }
+
+  // --- 2. USER OVERRIDE (The "Boss" Rule) ---
+  if (fan_switch_status === true) {
+    boostCounter = 0; // Reset boost if human is in control
+    return; 
+  }
+
+  // --- 3. AUTO-OFF & BOOST LOGIC ---
+  if (fan_output_status === true && fan_switch_status === false) {
+    
+    // Check if we have hit the dryness target or stalled out
+    let isDry = avgMoistureSurplus < CONFIG.dry_target;
+    let isStalled = Math.abs(surplus_trend) < CONFIG.equilibrium_gap && avgMoistureSurplus < CONFIG.equilibrium_max;
+
+    if (isDry || isStalled) {
+      // If we haven't finished the boost yet, keep going
+      if (boostCounter < CONFIG.boost_cycles) {
+        boostCounter++;
+        log("BOOST", "Target reached. Over-run cycle: " + boostCounter + "/" + CONFIG.boost_cycles);
+      } else {
+        // Boost finished or not needed
+        log("ACTION", "Drying complete. Fan OFF.");
+        fanOnReason = "Room is as dry as it can be";
+        boostCounter = 0;
+        Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: false });
+      }
+    } else {
+      // If the room gets wet again (someone jumped back in shower), reset boost
+      log("STATUS", "Still drying... avgMoistureSurplus: " + avgMoistureSurplus.toFixed(2) + "g → target: <" + CONFIG.dry_target + "g | surplus_trend: " + surplus_trend.toFixed(2) + "g → equilibrium: <" + CONFIG.equilibrium_gap + "g");
+      boostCounter = 0;
     }
   }
-});
+}
+function updateMoistureHistory(currentValue) {
+  let res = Shelly.getComponentStatus("text", CONFIG.moistureTrend_text_id);
+  // Ensure we have a string to work with
+  let historyStr = (res && typeof res.value === "string") ? res.value : "";
+  let history = historyStr.length > 0 ? historyStr.split(",") : [];
+
+  if (currentValue !== null) {
+    let newHistory = [];
+    newHistory[0] = currentValue.toFixed(2);
+    
+    // Manual shift to keep last x samples
+    for (let i = 0; i < (CONFIG.moistureTrendSamples - 1); i++) {
+      if (i < history.length) {
+        newHistory[i + 1] = history[i];
+      }
+    }
+    
+    history = newHistory;
+    let newStr = history.join(",");
+    
+    Shelly.call("Text.Set", { 
+      id: CONFIG.moistureTrend_text_id, 
+      value: newStr 
+    });
+  }
+
+  // Use a more robust check for empty arrays in mJS
+  if (historyStr === "" && currentValue === null) return 0;
+  
+  let sum = 0;
+  let count = 0;
+  for (let i = 0; i < (CONFIG.moistureTrendSamples - 1); i++) {
+    if (typeof history[i] !== "undefined") {
+      sum = sum + (history[i] * 1.0);
+      count = count + 1;
+    }
+  }
+  
+  return count > 0 ? sum / count : 0;
+} 
+
+function get_componentsStatus() {
+  int_humidity = Shelly.getComponentStatus("number:" + CONFIG.current_humidity_num_id);
+  int_temperature = Shelly.getComponentStatus("number:" + CONFIG.current_temperature_num_id);
+  ext_humidity = Shelly.getComponentStatus("number:" + CONFIG.external_humidity_num_id);
+  ext_temperature = Shelly.getComponentStatus("number:" + CONFIG.external_temperature_num_id);
+  fan_output_status = (Shelly.getComponentStatus("switch:" + CONFIG.fan_switch_id)).output;
+  fan_switch_status = (Shelly.getComponentStatus("input:" + CONFIG.fan_switch_id)).state; //physical switch
+
+  
+  
+  int_dewpoint = calcDP(int_temperature.value, int_humidity.value);
+  ext_dewpoint = calcDP(ext_temperature.value, ext_humidity.value);
+  
+  int_AbsoluteHumidity = calcAH(int_temperature.value, int_humidity.value);
+  ext_AbsoluteHumidity  = calcAH(ext_temperature.value, ext_humidity.value);
+  
+  int_spread = int_temperature.value - int_dewpoint;
+  
+  
+  dryingPotential = int_AbsoluteHumidity / ext_AbsoluteHumidity;
+  moistureSurplus = int_AbsoluteHumidity - ext_AbsoluteHumidity;
+  avgMoistureSurplus = updateMoistureHistory(null);
+  surplus_trend = moistureSurplus - avgMoistureSurplus
+  updateMoistureHistory(moistureSurplus);
+  
+}
+
+function log_status(){
+  log("STATUS", [
+     CONFIG.room_name + ": " + int_temperature.value + "C / " + int_humidity.value + "%",
+     "DewPoint: " + int_dewpoint.toFixed(1) + "C",
+     "IntSpread: " + int_spread.toFixed(1) + "C |",
+     "External: " + (ext_temperature ? ext_temperature.value : "N/A") + "C / " + (ext_humidity ? ext_humidity.value : "N/A") + "%",
+     "DewPoint: " + ext_dewpoint.toFixed(1) + "C",
+  ].join(" "));
+  log("STATUS", [
+    "moistureSurplus: " + moistureSurplus.toFixed(2) + "g |",
+    "avgMoistureSurplus: " + avgMoistureSurplus.toFixed(2) + "g |",
+    "surplus_trend: " + surplus_trend.toFixed(2) + " |",
+    "dryingPotential: " + (dryingPotential.toFixed(2)-1)*100 + "% |",
+  ].join(" "));
+  log("STATUS", [
+    "FanOn: " + fan_output_status + " |",
+    "FanSwitchOn: " + fan_switch_status + " |",
+    "Reason: " + fanOnReason
+  ].join(" "));
+}
 
 // === 2. INITIALIZATION LOG (Runs once at start) ===
 Timer.set(2000, false, function() {
-  let h = Shelly.getComponentStatus("number:" + CONFIG.current_humidity_num_id);
-  let t = Shelly.getComponentStatus("number:" + CONFIG.temperature_num_id);
-  let eh = Shelly.getComponentStatus("number:" + CONFIG.external_humidity_num_id);
-  let et = Shelly.getComponentStatus("number:" + CONFIG.external_temp_num_id);
-  let sw = Shelly.getComponentStatus("switch:" + CONFIG.fan_switch_id);
-  let fanOn = (sw && sw.output === true);
+  get_componentsStatus();
 
-  if (h && t) {
-    dpBaseline = calcDP(t.value, h.value);
-    let startInAH = calcAH(t.value, h.value);
-    let startOutAH = (eh && et) ? calcAH(et.value, eh.value) : startInAH;
+  
 
-    log("INIT", "Script Started Successfully");
-    log("INIT", "Current Bathroom: " + t.value + "C / " + h.value + "% (DP: " + dpBaseline.toFixed(1) + "C)");
-    log("INIT", "Current Outside:  " + (et ? et.value : "N/A") + "C / " + (eh ? eh.value : "N/A") + "%");
-    log("INIT", "Starting AH Delta: " + (startInAH - startOutAH).toFixed(2) + "g");
-    log("INIT", "Thresholds: Spike >" + CONFIG.dp_shower_spike + "C | Retrigger >" + CONFIG.dp_retrigger_threshold + "C (" + (CONFIG.dp_retrigger_cooldown / 60) + "min cooldown) | Stop <baseline+" + CONFIG.dp_stop_threshold + "C | Min run:" + CONFIG.dp_min_run_time + "s | AH-Delta >" + CONFIG.ah_efficiency_threshold + "g");
-    let fanMsg = "OFF";
-    if (fanOn) {
-      let elapsed = (sw.timer_started_at !== undefined) ? (Shelly.getComponentStatus("sys").unixtime - sw.timer_started_at) : -1;
-      fanMsg = "ON | Running ~" + (elapsed >= 0 ? Math.round(elapsed / 60) + " mins (auto-off in " + Math.round((3600 - elapsed) / 60) + " mins)" : "unknown duration (no timer active)");
-    }
-    log("INIT", "Fan is currently: " + fanMsg);
-  } else {
-    log("WARNING", "Init failed: Sensors not ready. Waiting for first update...");
-  }
+  log("INIT", "Script Started Successfully");
+  log_status();
+  
+    
 });
 
 // === 3. COMBINED 2-MINUTE TICK (Stop Poll + Baseline Update + Periodic Status) ===
-Timer.set(120000, true, function() {
+Timer.set(10000, true, function() {
   tickCount++;
-  let t = Shelly.getComponentStatus("number:" + CONFIG.temperature_num_id);
-  let h = Shelly.getComponentStatus("number:" + CONFIG.current_humidity_num_id);
-  let et = Shelly.getComponentStatus("number:" + CONFIG.external_temp_num_id);
-  let eh = Shelly.getComponentStatus("number:" + CONFIG.external_humidity_num_id);
-  let sw = Shelly.getComponentStatus("switch:" + CONFIG.fan_switch_id);
-  if (!t || !h) return;
-
-  let nowDP = calcDP(t.value, h.value);
-  let inAH = calcAH(t.value, h.value);
-  let outAH = (et && eh) ? calcAH(et.value, eh.value) : inAH;
-  let fanOn = (sw && sw.output === true);
-
-  if (fanOn) {
-    // --- Stop condition poll ---
-    let spikeVal = nowDP - dpBaseline;
-    let stopTarget = dpBaseline + CONFIG.dp_stop_threshold;
-    let runSecs = (Date.now() - fanStartTime) / 1000;
-    if (runSecs < CONFIG.dp_min_run_time) {
-      log("POLL", "Fan ON | Min run time active (" + Math.round(runSecs) + "s of " + CONFIG.dp_min_run_time + "s) | DP:" + nowDP.toFixed(1) + "C");
-    } else if (nowDP < stopTarget) {
-      logFanOff("POLL-STOP", nowDP, t.value, h.value, et, eh);
-      Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: false });
-    } else {
-      log("POLL", "Fan still ON | Stop when DP <" + stopTarget.toFixed(1) + "C (now " + nowDP.toFixed(1) + "C, delta +" + spikeVal.toFixed(2) + "C of " + CONFIG.dp_stop_threshold + "C needed)");
-    }
-  } else if (!fanJustStopped) {
-    // --- Baseline update (only when fan off and not in cooldown) ---
-    dpBaseline = nowDP;
-  }
-
-  // --- Status log every 5 ticks (10 mins) ---
+  get_componentsStatus();
+  autoFanControl();
+   // --- Status log every 5 ticks (10 mins) ---
+  log_status(); //log every two for now
   if (tickCount % 5 === 0) {
-    log("STATUS", "Bath:" + t.value + "C/" + h.value + "% DP:" + nowDP.toFixed(1) + "C | Out:" + (et?et.value:"N/A") + "C/" + (eh?eh.value:"N/A") + "% | AH-Delta:" + (inAH-outAH).toFixed(2) + "g | Baseline:" + dpBaseline.toFixed(1) + "C | Fan:" + (fanOn?"ON":"OFF") + (fanJustStopped?" [COOLDOWN]":""));
+    //log_status();
   }
 });
