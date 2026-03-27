@@ -27,8 +27,8 @@ function halt(msg) {
   }, null);
 }
 
-function fetchAndDeploy(pat, url, branch) {
-  let fullUrl = url + "/contents/" + WATCHDOG_FILE + "?ref=" + branch;
+function fetchAndDeploy(pat, url, branch, path) {
+  let fullUrl = url + "/contents/" + path + "/" + WATCHDOG_FILE + "?ref=" + branch;
   log("Fetching " + WATCHDOG_FILE + " from " + fullUrl);
 
   Shelly.call("HTTP.GET", {
@@ -107,7 +107,10 @@ Timer.set(2000, false, function() {
       if (e2 || !r2) { halt("Missing wd.url in KVS"); return; }
       Shelly.call("KVS.Get", { key: "wd.branch" }, function(r3, e3) {
         if (e3 || !r3) { halt("Missing wd.branch in KVS"); return; }
-        fetchAndDeploy(r1.value, r2.value, r3.value);
+        Shelly.call("KVS.Get", { key: "wd.path" }, function(r4, e4) {
+          if (e4 || !r4) { halt("Missing wd.path in KVS"); return; }
+          fetchAndDeploy(r1.value, r2.value, r3.value, r4.value);
+        });
       });
     });
   });
