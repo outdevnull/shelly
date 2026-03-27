@@ -21,7 +21,6 @@ let CONFIG = {
 // Written to KVS only if key is missing — user can override via KVS
 let KVS_DEFAULTS = {
   "fan.room_name":                  "Bathroom",
-  "fan.mqtt_prefix":                "shelly/bathroom-fan",
   "fan.shower_spike":               0.60,
   "fan.abs_surplus_threshold":      2.0,
   "fan.dry_target":                 0.40,
@@ -115,7 +114,8 @@ function log(level, msg) {
 }
 
 // ================= KVS BOOT =================
-// Reads all KVS_DEFAULTS keys into S, writing defaults for any missing keys
+// Reads all KVS_DEFAULTS keys into S, writing defaults for any missing keys.
+// Also reads mqtt.topic_prefix from KVS (set by watchdog via kvsConfig) as S.mqtt_prefix.
 function loadSettings(callback) {
   let keys = Object.keys(KVS_DEFAULTS);
   let i = 0;
@@ -125,9 +125,19 @@ function loadSettings(callback) {
     let short = k.slice(4); // strip "fan." prefix
     S[short] = KVS_DEFAULTS[k];
   }
+  S.mqtt_prefix = "shelly/bathroom-fan"; // fallback until KVS read completes
 
   function next() {
-    if (i >= keys.length) { callback(); return; }
+    if (i >= keys.length) {
+      // All fan.* keys loaded — now read mqtt.topic_prefix as single source of truth
+      Shelly.call("KVS.Get", { key: "mqtt.topic_prefix" }, function(res, err) {
+        if (!err && res && res.value) {
+          S.mqtt_prefix = res.value;
+        }
+        callback();
+      });
+      return;
+    }
     let key = keys[i];
     let short = key.slice(4); // strip "fan." prefix
     i++;
