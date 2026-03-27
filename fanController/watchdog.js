@@ -20,6 +20,7 @@ let healthTimer = null;
 
 // ================= RPC QUEUE =================
 let rpcQueue = [];
+let rpcHead = 0;
 let rpcBusy = false;
 
 function shellyCall(method, params, callback) {
@@ -28,9 +29,19 @@ function shellyCall(method, params, callback) {
 }
 
 function drainQueue() {
-  if (rpcBusy || rpcQueue.length === 0) return;
+  if (rpcBusy || rpcHead >= rpcQueue.length) return;
   rpcBusy = true;
-  let item = rpcQueue.shift();
+  let item = rpcQueue[rpcHead];
+  rpcHead++;
+  // Periodically compact the queue to avoid unbounded growth
+  if (rpcHead > 20) {
+    let newQueue = [];
+    for (let j = rpcHead; j < rpcQueue.length; j++) {
+      newQueue.push(rpcQueue[j]);
+    }
+    rpcQueue = newQueue;
+    rpcHead = 0;
+  }
   Timer.set(cfg.rpc_delay, false, function() {
     Shelly.call(item.method, item.params, function(res, err) {
       rpcBusy = false;
