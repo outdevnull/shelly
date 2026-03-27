@@ -8,6 +8,7 @@ let cfg = {
   pat: "",
   url: "",
   branch: "",
+  path: "",
   interval: 604800,     // default weekly
   next_check: 300,
   health_interval: 300, // default 5 mins
@@ -67,8 +68,9 @@ function log(level, msg) {
 
 // ================= GITHUB =================
 // HTTP.GET goes direct — separate subsystem, not subject to RPC rate limits
-function githubGet(path, callback) {
-  let url = cfg.url + "/contents/" + path + "?ref=" + cfg.branch;
+function githubGet(file, callback) {
+  let fullPath = cfg.path ? cfg.path + "/" + file : file;
+  let url = cfg.url + "/contents/" + fullPath + "?ref=" + cfg.branch;
   Shelly.call("HTTP.GET", {
     url: url,
     headers: {
@@ -394,26 +396,77 @@ function fetchManifestAndDeploy() {
 
     provisionComponents(manifest.components, function() {
       provisionConfig(manifest.config || {}, function() {
-        provisionKvsDefaults(manifest.kvsDefaults || {}, function() {
-          checkForcedFlags(manifest.scripts, function(flags) {
-            checkAndDeployScript(manifest.scripts, 0, flags, false, function(anyDeployed) {
-              if (anyDeployed) {
-                cfg.next_check = 300;
-                kvsSet("wd.next_check", "300", null);
-                scheduleNext(300);
-              } else {
-                let next = cfg.next_check * 2;
-                if (next > cfg.interval) next = cfg.interval;
-                cfg.next_check = next;
-                kvsSet("wd.next_check", String(next), null);
-                scheduleNext(next);
-              }
+        provisionKvsConfig(manifest.kvsConfig || {}, function() {
+          provisionKvsDefaults(manifest.kvsDefaults || {}, function() {
+            checkForcedFlags(manifest.scripts, function(flags) {
+              checkAndDeployScript(manifest.scripts, 0, flags, false, function(anyDeployed) {
+                if (anyDeployed) {
+                  cfg.next_check = 300;
+                  kvsSet("wd.next_check", "300", null);
+                  scheduleNext(300);
+                } else {
+                  let next = cfg.next_check * 2;
+                  if (next > cfg.interval) next = cfg.interval;
+                  cfg.next_check = next;
+                  kvsSet("wd.next_check", String(next), null);
+                  scheduleNext(next);
+                }
+              });
             });
           });
         });
       });
     });
   });
+}
+
+// ================= KVS CONFIG =================
+// Applies RPC config only if KVS key doesn't exist — user can override by setting the key
+function provisionKvsConfig(kvsConfig, callback) {
+  let keys = Object.keys(kvsConfig);
+  let i = 0;
+
+  function next() {
+    if (i >= keys.length) { callback(); return; }
+    let key   = keys[i];
+    let entry = kvsConfig[key];
+    i++;
+
+    shellyCall("KVS.Get", { key: key }, function(res, err) {
+      if (!err && res) {
+        // Key exists — user has configured this, skip
+        next();
+        return;
+      }
+
+      // Key missing — check if device already has correct value
+      let getMethod = entry.method.replace("SetConfig", "GetConfig");
+      shellyCall(getMethod, {}, function(gres, gerr) {
+        if (!gerr && gres && !configDiffers(entry.config, gres)) {
+          // Already correct — just mark as configured in KVS
+          shellyCall("KVS.Set", { key: key, value: "configured" }, function() { next(); });
+          return;
+        }
+
+        log("INFO", "Applying kvsConfig: " + entry.method + " for " + key);
+        shellyCall(entry.method, { config: entry.config }, function(sres, serr) {
+          if (serr) {
+            log("WARN", "Failed to apply " + entry.method + " for " + key + ": " + JSON.stringify(serr));
+            next();
+            return;
+          }
+          if (sres && sres.restart_required) {
+            log("WARN", entry.method + " (" + key + ") applied but REBOOT REQUIRED to take effect");
+          } else {
+            log("INFO", entry.method + " (" + key + ") applied OK");
+          }
+          shellyCall("KVS.Set", { key: key, value: "configured" }, function() { next(); });
+        });
+      });
+    });
+  }
+
+  next();
 }
 
 // ================= KVS DEFAULTS =================
@@ -430,11 +483,9 @@ function provisionKvsDefaults(defaults, callback) {
 
     shellyCall("KVS.Get", { key: key }, function(res, err) {
       if (!err && res) {
-        // Key exists — leave it alone
         next();
         return;
       }
-      // Key missing — write default
       shellyCall("KVS.Set", { key: key, value: String(val) }, function(res2, err2) {
         if (err2) {
           log("WARN", "Failed to set KVS default: " + key);
@@ -449,7 +500,7 @@ function provisionKvsDefaults(defaults, callback) {
   next();
 }
 
-(scripts, callback) {
+function checkForcedFlags(scripts, callback) {
   let flags = [];
   let i = 0;
 
@@ -530,33 +581,37 @@ function boot() {
   kvsGet("wd.pat", function(pat) {
     kvsGet("wd.url", function(url) {
       kvsGet("wd.branch", function(branch) {
-        kvsGet("wd.interval", function(interval) {
-          kvsGet("wd.next_check", function(next_check) {
-            kvsGet("wd.health_interval", function(health_interval) {
-              kvsGet("wd.rpc_delay", function(rpc_delay) {
+        kvsGet("wd.path", function(path) {
+          kvsGet("wd.interval", function(interval) {
+            kvsGet("wd.next_check", function(next_check) {
+              kvsGet("wd.health_interval", function(health_interval) {
+                kvsGet("wd.rpc_delay", function(rpc_delay) {
 
-                if (!pat || !url || !branch) {
-                  log("ERROR", "Missing required KVS config (wd.pat, wd.url, wd.branch) — halting");
-                  return;
-                }
+                  if (!pat || !url || !branch || !path) {
+                    log("ERROR", "Missing required KVS config (wd.pat, wd.url, wd.branch, wd.path) — halting");
+                    return;
+                  }
 
-                cfg.pat             = pat;
-                cfg.url             = url;
-                cfg.branch          = branch;
-                cfg.interval        = interval        ? (interval * 1)        : 604800;
-                cfg.next_check      = next_check      ? (next_check * 1)      : 300;
-                cfg.health_interval = health_interval ? (health_interval * 1) : 300;
-                cfg.rpc_delay       = rpc_delay       ? (rpc_delay * 1)       : 200;
+                  cfg.pat             = pat;
+                  cfg.url             = url;
+                  cfg.branch          = branch;
+                  cfg.path            = path;
+                  cfg.interval        = interval        ? (interval * 1)        : 604800;
+                  cfg.next_check      = next_check      ? (next_check * 1)      : 300;
+                  cfg.health_interval = health_interval ? (health_interval * 1) : 300;
+                  cfg.rpc_delay       = rpc_delay       ? (rpc_delay * 1)       : 200;
 
-                log("INFO",
-                  "Config loaded." +
-                  " version_interval:" + cfg.interval + "s" +
-                  " health_interval:"  + cfg.health_interval + "s" +
-                  " rpc_delay:"        + cfg.rpc_delay + "ms"
-                );
+                  log("INFO",
+                    "Config loaded." +
+                    " path:" + cfg.path +
+                    " version_interval:" + cfg.interval + "s" +
+                    " health_interval:"  + cfg.health_interval + "s" +
+                    " rpc_delay:"        + cfg.rpc_delay + "ms"
+                  );
 
-                runVersionCycle();
-                scheduleHealth();
+                  runVersionCycle();
+                  scheduleHealth();
+                });
               });
             });
           });
