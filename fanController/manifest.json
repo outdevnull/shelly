@@ -4,33 +4,34 @@
       "config": {
         "enable": false
       }
-    },
-    "Mqtt.SetConfig": {
-      "config": {
-        "enable": true,
-        "server": "192.168.x.x:1883"
-      }
     }
   },
+  "kvsConfig": {
+    "mqtt.enable":       { "method": "Mqtt.SetConfig", "config": { "enable": true } },
+    "mqtt.server":       { "method": "Mqtt.SetConfig", "config": { "server": "10.0.140.225:1883" } },
+    "mqtt.client_id":    { "method": "Mqtt.SetConfig", "config": { "client_id": "bathroom-fan" } },
+    "mqtt.topic_prefix": { "method": "Mqtt.SetConfig", "config": { "topic_prefix": "shelly/bathroom-fan" } },
+    "device.name":       { "method": "Sys.SetConfig",  "config": { "device": { "name": "Bathroom Fan Controller" } } },
+    "device.tz":         { "method": "Sys.SetConfig",  "config": { "location": { "tz": "Australia/Sydney" } } }
+  },
   "kvsDefaults": {
-    "wd.interval":                  604800,
-    "wd.health_interval":           300,
-    "wd.rpc_delay":                 200,
-    "fan.room_name":                "Bathroom",
-    "fan.mqtt_prefix":              "shelly/bathroom-fan",
-    "fan.shower_spike":             0.60,
-    "fan.abs_surplus_threshold":    2.0,
-    "fan.dry_target":               0.40,
-    "fan.equilibrium_gap":          0.02,
-    "fan.equilibrium_max":          0.90,
-    "fan.boost_cycles":             5,
-    "fan.min_runtime":              900,
-    "fan.quiet_hours_start":        11,
-    "fan.quiet_hours_end":          18,
-    "fan.quiet_hours_avg_override": 0.5,
-    "fan.passive_surplus_threshold":1.0,
-    "fan.passive_drying_min":       1.10,
-    "fan.passive_runtime":          600
+    "wd.interval":                   604800,
+    "wd.health_interval":            300,
+    "wd.rpc_delay":                  200,
+    "fan.room_name":                 "Bathroom",
+    "fan.shower_spike":              0.60,
+    "fan.abs_surplus_threshold":     2.0,
+    "fan.dry_target":                0.40,
+    "fan.equilibrium_gap":           0.02,
+    "fan.equilibrium_max":           0.90,
+    "fan.boost_cycles":              5,
+    "fan.min_runtime":               900,
+    "fan.quiet_hours_start":         11,
+    "fan.quiet_hours_end":           18,
+    "fan.quiet_hours_avg_override":  0.5,
+    "fan.passive_surplus_threshold": 1.0,
+    "fan.passive_drying_min":        1.10,
+    "fan.passive_runtime":           600
   },
   "components": [
     { "type": "number", "id": 200, "name": "int_humidity" },
