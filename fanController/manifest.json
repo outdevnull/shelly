@@ -1,0 +1,58 @@
+{
+  "config": {
+    "BLE.SetConfig": {
+      "config": {
+        "enable": false
+      }
+    },
+    "Mqtt.SetConfig": {
+      "config": {
+        "enable": true,
+        "server": "192.168.x.x:1883"
+      }
+    }
+  },
+  "kvsDefaults": {
+    "wd.interval":                  604800,
+    "wd.health_interval":           300,
+    "wd.rpc_delay":                 200,
+    "fan.room_name":                "Bathroom",
+    "fan.mqtt_prefix":              "shelly/bathroom-fan",
+    "fan.shower_spike":             0.60,
+    "fan.abs_surplus_threshold":    2.0,
+    "fan.dry_target":               0.40,
+    "fan.equilibrium_gap":          0.02,
+    "fan.equilibrium_max":          0.90,
+    "fan.boost_cycles":             5,
+    "fan.min_runtime":              900,
+    "fan.quiet_hours_start":        11,
+    "fan.quiet_hours_end":          18,
+    "fan.quiet_hours_avg_override": 0.5,
+    "fan.passive_surplus_threshold":1.0,
+    "fan.passive_drying_min":       1.10,
+    "fan.passive_runtime":          600
+  },
+  "components": [
+    { "type": "number", "id": 200, "name": "int_humidity" },
+    { "type": "number", "id": 201, "name": "int_temperature" },
+    { "type": "number", "id": 202, "name": "ext_humidity" },
+    { "type": "number", "id": 203, "name": "ext_temperature" },
+    { "type": "text",   "id": 200, "name": "moisture_trend" }
+  ],
+  "scripts": [
+    {
+      "id": 1,
+      "name": "watchdog",
+      "file": "watchdog.js",
+      "version": "1.0.0",
+      "autostart": false
+    },
+    {
+      "id": 2,
+      "name": "bathroom-fan",
+      "file": "fan_controller_v4.js",
+      "version": "1.0.0",
+      "autostart": true
+    }
+  ]
+}
