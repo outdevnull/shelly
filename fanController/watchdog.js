@@ -394,19 +394,21 @@ function fetchManifestAndDeploy() {
 
     provisionComponents(manifest.components, function() {
       provisionConfig(manifest.config || {}, function() {
-        checkForcedFlags(manifest.scripts, function(flags) {
-          checkAndDeployScript(manifest.scripts, 0, flags, false, function(anyDeployed) {
-            if (anyDeployed) {
-              cfg.next_check = 300;
-              kvsSet("wd.next_check", "300", null);
-              scheduleNext(300);
-            } else {
-              let next = cfg.next_check * 2;
-              if (next > cfg.interval) next = cfg.interval;
-              cfg.next_check = next;
-              kvsSet("wd.next_check", String(next), null);
-              scheduleNext(next);
-            }
+        provisionKvsDefaults(manifest.kvsDefaults || {}, function() {
+          checkForcedFlags(manifest.scripts, function(flags) {
+            checkAndDeployScript(manifest.scripts, 0, flags, false, function(anyDeployed) {
+              if (anyDeployed) {
+                cfg.next_check = 300;
+                kvsSet("wd.next_check", "300", null);
+                scheduleNext(300);
+              } else {
+                let next = cfg.next_check * 2;
+                if (next > cfg.interval) next = cfg.interval;
+                cfg.next_check = next;
+                kvsSet("wd.next_check", String(next), null);
+                scheduleNext(next);
+              }
+            });
           });
         });
       });
@@ -414,7 +416,40 @@ function fetchManifestAndDeploy() {
   });
 }
 
-function checkForcedFlags(scripts, callback) {
+// ================= KVS DEFAULTS =================
+// Writes manifest kvsDefaults to KVS only if key doesn't already exist
+function provisionKvsDefaults(defaults, callback) {
+  let keys = Object.keys(defaults);
+  let i = 0;
+
+  function next() {
+    if (i >= keys.length) { callback(); return; }
+    let key = keys[i];
+    let val = defaults[key];
+    i++;
+
+    shellyCall("KVS.Get", { key: key }, function(res, err) {
+      if (!err && res) {
+        // Key exists — leave it alone
+        next();
+        return;
+      }
+      // Key missing — write default
+      shellyCall("KVS.Set", { key: key, value: String(val) }, function(res2, err2) {
+        if (err2) {
+          log("WARN", "Failed to set KVS default: " + key);
+        } else {
+          log("INFO", "KVS default set: " + key + " = " + val);
+        }
+        next();
+      });
+    });
+  }
+
+  next();
+}
+
+(scripts, callback) {
   let flags = [];
   let i = 0;
 
