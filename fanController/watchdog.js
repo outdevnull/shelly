@@ -5,7 +5,6 @@ let MANIFEST_FILE = "manifest.json";
 
 // ================= STATE =================
 let cfg = {
-  pat: "",
   url: "",
   branch: "",
   path: "",
@@ -74,7 +73,6 @@ function githubGet(file, callback) {
   Shelly.call("HTTP.GET", {
     url: url,
     headers: {
-      "Authorization": "token " + cfg.pat,
       "Accept": "application/vnd.github.v3+json"
     }
   }, function(res, err) {
@@ -578,40 +576,37 @@ function scheduleNext(seconds) {
 function boot() {
   log("INFO", "Watchdog booting...");
 
-  kvsGet("wd.pat", function(pat) {
-    kvsGet("wd.url", function(url) {
-      kvsGet("wd.branch", function(branch) {
-        kvsGet("wd.path", function(path) {
-          kvsGet("wd.interval", function(interval) {
-            kvsGet("wd.next_check", function(next_check) {
-              kvsGet("wd.health_interval", function(health_interval) {
-                kvsGet("wd.rpc_delay", function(rpc_delay) {
+  kvsGet("wd.url", function(url) {
+    kvsGet("wd.branch", function(branch) {
+      kvsGet("wd.path", function(path) {
+        kvsGet("wd.interval", function(interval) {
+          kvsGet("wd.next_check", function(next_check) {
+            kvsGet("wd.health_interval", function(health_interval) {
+              kvsGet("wd.rpc_delay", function(rpc_delay) {
 
-                  if (!pat || !url || !branch || !path) {
-                    log("ERROR", "Missing required KVS config (wd.pat, wd.url, wd.branch, wd.path) — halting");
-                    return;
-                  }
+                if (!url || !branch || !path) {
+                  log("ERROR", "Missing required KVS config (wd.url, wd.branch, wd.path) — halting");
+                  return;
+                }
 
-                  cfg.pat             = pat;
-                  cfg.url             = url;
-                  cfg.branch          = branch;
-                  cfg.path            = path;
-                  cfg.interval        = interval        ? (interval * 1)        : 604800;
-                  cfg.next_check      = next_check      ? (next_check * 1)      : 300;
-                  cfg.health_interval = health_interval ? (health_interval * 1) : 300;
-                  cfg.rpc_delay       = rpc_delay       ? (rpc_delay * 1)       : 200;
+                cfg.url             = url;
+                cfg.branch          = branch;
+                cfg.path            = path;
+                cfg.interval        = interval        ? (interval * 1)        : 604800;
+                cfg.next_check      = next_check      ? (next_check * 1)      : 300;
+                cfg.health_interval = health_interval ? (health_interval * 1) : 300;
+                cfg.rpc_delay       = rpc_delay       ? (rpc_delay * 1)       : 200;
 
-                  log("INFO",
-                    "Config loaded." +
-                    " path:" + cfg.path +
-                    " version_interval:" + cfg.interval + "s" +
-                    " health_interval:"  + cfg.health_interval + "s" +
-                    " rpc_delay:"        + cfg.rpc_delay + "ms"
-                  );
+                log("INFO",
+                  "Config loaded." +
+                  " path:" + cfg.path +
+                  " version_interval:" + cfg.interval + "s" +
+                  " health_interval:"  + cfg.health_interval + "s" +
+                  " rpc_delay:"        + cfg.rpc_delay + "ms"
+                );
 
-                  runVersionCycle();
-                  scheduleHealth();
-                });
+                runVersionCycle();
+                scheduleHealth();
               });
             });
           });
