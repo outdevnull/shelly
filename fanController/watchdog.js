@@ -6,7 +6,6 @@ let CFW  = "https://shelly-proxy.ash-b39.workers.dev";
 let FCHK = 4096;
 let PCHK = 1024;
 let WDSL = 2;
-let KVSL = 4;
 let SLFI = Shelly.getCurrentScriptId();
 
 // ================= RPC QUEUE =================
@@ -319,6 +318,17 @@ function cwup(cb) {
   }); });
 }
 
+// ================= FIND KVS RESTORE SLOT =================
+function fksl(cb) {
+  Shelly.call("Script.List", {}, function(r, e) {
+    if (e || !r || !r.scripts) { cb(null); return; }
+    for (let i = 0; i < r.scripts.length; i++) {
+      if (r.scripts[i].name === "kvs_restore") { cb(r.scripts[i].id); return; }
+    }
+    cb(null);
+  });
+}
+
 // ================= GEN KVS RESTORE =================
 function gkrs(cb) {
   Shelly.call("KVS.GetMany", {}, function(r, e) {
@@ -353,19 +363,19 @@ function gkrs(cb) {
     ln.push("nx();");
     let code = ln.join("\n"); ln = null; kd = null;
 
-    Shelly.call("Script.GetStatus", { id: KVSL }, function(rs, es) {
-      function deploy() {
+    fksl(function(sid) {
+      function deploy(id) {
         let fpt = true; let pos = 0;
         function dp() {
           if (pos >= code.length) {
             code = null;
-            Shelly.call("Script.SetConfig", { id: KVSL, config: { enable: true } }, null);
-            lg("INFO", "kvs_restore deployed slot:" + KVSL);
+            Shelly.call("Script.SetConfig", { id: id, config: { enable: true } }, null);
+            lg("INFO", "kvs_restore deployed id:" + id);
             cb(); return;
           }
           let pc = code.slice(pos, pos + PCHK);
           let ap = !fpt; fpt = false; pos += pc.length;
-          Shelly.call("Script.PutCode", { id: KVSL, code: pc, append: ap }, function(r2, e2) {
+          Shelly.call("Script.PutCode", { id: id, code: pc, append: ap }, function(r2, e2) {
             pc = null;
             if (e2) { lg("ERR", "kvs_restore put"); code = null; cb(); return; }
             Timer.set(0, false, dp);
@@ -373,19 +383,20 @@ function gkrs(cb) {
         }
         dp();
       }
-      if (es || !rs) {
+      if (sid === null) {
         Shelly.call("Script.Create", { name: "kvs_restore" }, function(rc, ec) {
           if (ec || !rc) { lg("ERR", "kvs_restore create"); cb(); return; }
-          KVSL = rc.id;
-          lg("INFO", "kvs_restore created id:" + KVSL);
-          deploy();
+          lg("INFO", "kvs_restore created id:" + rc.id);
+          deploy(rc.id);
         });
       } else {
-        if (rs.running) {
-          Shelly.call("Script.Stop", { id: KVSL }, function() { deploy(); });
-        } else {
-          deploy();
-        }
+        Shelly.call("Script.GetStatus", { id: sid }, function(rs, es) {
+          if (!es && rs && rs.running) {
+            Shelly.call("Script.Stop", { id: sid }, function() { deploy(sid); });
+          } else {
+            deploy(sid);
+          }
+        });
       }
     });
   });
@@ -557,17 +568,23 @@ function snxt(s) {
 }
 
 // ================= WAIT KVS RESTORE =================
-// Poll Script.GetStatus for kvs_restore (slot KVSL) until it stops running.
+// Find kvs_restore by name, then poll until it stops running.
 // There is a window between device boot and kvs_restore completing where KVS
 // may be empty — this function bridges that window before normal boot proceeds.
 function wkr(cb) {
-  Shelly.call("Script.GetStatus", { id: KVSL }, function(r, e) {
-    if (!e && r && r.running) {
-      lg("INFO", "wait kvs_restore...");
-      Timer.set(1000, false, function() { wkr(cb); });
-    } else {
-      cb();
+  fksl(function(sid) {
+    if (sid === null) { cb(); return; } // not yet created, nothing to wait for
+    function poll() {
+      Shelly.call("Script.GetStatus", { id: sid }, function(r, e) {
+        if (!e && r && r.running) {
+          lg("INFO", "wait kvs_restore...");
+          Timer.set(1000, false, poll);
+        } else {
+          cb();
+        }
+      });
     }
+    poll();
   });
 }
 
