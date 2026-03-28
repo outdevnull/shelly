@@ -5,13 +5,12 @@ let MANIFEST_FILE = "manifest.json";
 
 // ================= STATE =================
 let cfg = {
-  url: "",
   branch: "",
   path: "",
-  interval: 604800,     // default weekly
+  interval: 604800,
   next_check: 300,
-  health_interval: 300, // default 5 mins
-  rpc_delay: 200        // ms between RPC calls
+  health_interval: 300,
+  rpc_delay: 200
 };
 
 let manifest = null;
@@ -77,38 +76,44 @@ function log(level, msg) {
 }
 
 // ================= GITHUB =================
-// HTTP.GET goes direct — separate subsystem, not subject to RPC rate limits
-function githubGet(file, callback) {
-  let fullPath = cfg.path ? cfg.path + "/" + file : file;
-  let url = cfg.url + "/contents/" + fullPath + "?ref=" + cfg.branch;
-  Shelly.call("HTTP.GET", {
-    url: url,
-    headers: {
-      "Accept": "application/vnd.github.v3+json"
-    }
-  }, function(res, err) {
-    if (err || !res || res.code !== 200) {
-      log("ERROR", "GitHub fetch failed: " + path + " err:" + JSON.stringify(err));
-      callback(null);
-      return;
-    }
-    let body = null;
-    try { body = JSON.parse(res.body); } catch(e) {
-      log("ERROR", "JSON parse failed: " + path);
-      callback(null);
-      return;
-    }
-    callback(body);
-  });
-}
+let CF_WORKER  = "https://shelly-proxy.ash-b39.workers.dev";
+let FETCH_CHUNK = 4096;
 
-function decodeBase64Content(encoded) {
-  let stripped = "";
-  for (let i = 0; i < encoded.length; i++) {
-    let c = encoded[i];
-    if (c !== "\n" && c !== "\r" && c !== " ") stripped += c;
+function githubGet(file, callback) {
+  let assembled = "";
+  let offset    = 0;
+
+  function fetchNext() {
+    let url = CF_WORKER + "/?file=" + cfg.path + "/" + file +
+              "&ref=" + cfg.branch +
+              "&offset=" + offset +
+              "&len=" + FETCH_CHUNK;
+
+    Shelly.call("HTTP.GET", { url: url }, function(res, err) {
+      if (err || !res || res.code !== 200) {
+        log("ERROR", "Fetch failed: " + file + " offset:" + offset + " err:" + JSON.stringify(err));
+        callback(null);
+        return;
+      }
+
+      assembled += res.body;
+
+      let left = 0;
+      if (res.headers && res.headers["X-Left"] !== undefined) {
+        left = res.headers["X-Left"] * 1;
+      }
+
+      offset += res.body.length;
+
+      if (left > 0) {
+        Timer.set(200, false, function() { fetchNext(); });
+      } else {
+        callback(assembled);
+      }
+    });
   }
-  return atob(stripped);
+
+  fetchNext();
 }
 
 function extractVersion(code) {
@@ -390,13 +395,7 @@ function fetchManifestAndDeploy() {
       return;
     }
 
-    let content = null;
-    try { content = decodeBase64Content(body.content); } catch(e) {
-      log("ERROR", "Failed to decode manifest");
-      scheduleNext(300);
-      return;
-    }
-
+    let content = body;
     try { manifest = JSON.parse(content); } catch(e) {
       log("ERROR", "Failed to parse manifest");
       scheduleNext(300);
@@ -539,13 +538,7 @@ function checkAndDeployScript(scripts, i, forcedFlags, anyDeployed, callback) {
       return;
     }
 
-    let content = null;
-    try { content = decodeBase64Content(body.content); } catch(e) {
-      log("ERROR", "Failed to decode " + script.file);
-      checkAndDeployScript(scripts, i + 1, forcedFlags, anyDeployed, callback);
-      return;
-    }
-
+    let content = body;
     let remoteVersion = extractVersion(content);
 
     getDeployedVersion(script.id, function(localVersion) {
@@ -587,38 +580,35 @@ function scheduleNext(seconds) {
 function boot() {
   log("INFO", "Watchdog booting...");
 
-  kvsGet("wd.url", function(url) {
-    kvsGet("wd.branch", function(branch) {
-      kvsGet("wd.path", function(path) {
-        kvsGet("wd.interval", function(interval) {
-          kvsGet("wd.next_check", function(next_check) {
-            kvsGet("wd.health_interval", function(health_interval) {
-              kvsGet("wd.rpc_delay", function(rpc_delay) {
+  kvsGet("wd.branch", function(branch) {
+    kvsGet("wd.path", function(path) {
+      kvsGet("wd.interval", function(interval) {
+        kvsGet("wd.next_check", function(next_check) {
+          kvsGet("wd.health_interval", function(health_interval) {
+            kvsGet("wd.rpc_delay", function(rpc_delay) {
 
-                if (!url || !branch || !path) {
-                  log("ERROR", "Missing required KVS config (wd.url, wd.branch, wd.path) — halting");
-                  return;
-                }
+              if (!branch || !path) {
+                log("ERROR", "Missing required KVS config (wd.branch, wd.path) — halting");
+                return;
+              }
 
-                cfg.url             = url;
-                cfg.branch          = branch;
-                cfg.path            = path;
-                cfg.interval        = interval        ? (interval * 1)        : 604800;
-                cfg.next_check      = next_check      ? (next_check * 1)      : 300;
-                cfg.health_interval = health_interval ? (health_interval * 1) : 300;
-                cfg.rpc_delay       = rpc_delay       ? (rpc_delay * 1)       : 200;
+              cfg.branch          = branch;
+              cfg.path            = path;
+              cfg.interval        = interval        ? (interval * 1)        : 604800;
+              cfg.next_check      = next_check      ? (next_check * 1)      : 300;
+              cfg.health_interval = health_interval ? (health_interval * 1) : 300;
+              cfg.rpc_delay       = rpc_delay       ? (rpc_delay * 1)       : 200;
 
-                log("INFO",
-                  "Config loaded." +
-                  " path:" + cfg.path +
-                  " version_interval:" + cfg.interval + "s" +
-                  " health_interval:"  + cfg.health_interval + "s" +
-                  " rpc_delay:"        + cfg.rpc_delay + "ms"
-                );
+              log("INFO",
+                "Config loaded." +
+                " path:" + cfg.path +
+                " version_interval:" + cfg.interval + "s" +
+                " health_interval:"  + cfg.health_interval + "s" +
+                " rpc_delay:"        + cfg.rpc_delay + "ms"
+              );
 
-                runVersionCycle();
-                scheduleHealth();
-              });
+              runVersionCycle();
+              scheduleHealth();
             });
           });
         });
