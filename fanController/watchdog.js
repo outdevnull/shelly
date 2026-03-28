@@ -208,7 +208,9 @@ function dpsc(sc, cb) {
       if (e || !r) {
         scll("Script.Create", { name: sc.name }, function(r2, e2) {
           if (e2) { lg("ERR", "create:" + sc.name); cb(false); return; }
-          lg("INFO", "created slot for:" + sc.name);
+          let nid = r2.id;
+          lg("INFO", "created slot " + nid + " for:" + sc.name);
+          sc.id = nid;
           dwr();
         });
       } else {
