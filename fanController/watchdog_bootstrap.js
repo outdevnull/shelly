@@ -116,7 +116,8 @@ Timer.set(2000, false, function() {
                   log("Deploy complete. Starting Script " + targetId + "...");
                   Shelly.call("Script.Start", { id: targetId }, function(r3, e3) {
                     if (e3) { halt("Failed to start Script " + targetId); return; }
-                    log("Watchdog running. Bootstrap complete.");
+                    log("Watchdog running. Bootstrap complete. Stopping self.");
+                    Shelly.call("Script.Stop", { id: 1 }, null);
                   });
                 });
               });
@@ -128,7 +129,8 @@ Timer.set(2000, false, function() {
               log("Deploy complete. Starting Script " + targetId + "...");
               Shelly.call("Script.Start", { id: targetId }, function(res2, err2) {
                 if (err2) { halt("Failed to start Script " + targetId + " err:" + JSON.stringify(err2)); return; }
-                log("Watchdog running. Bootstrap complete.");
+                log("Watchdog running. Bootstrap complete. Stopping self.");
+                Shelly.call("Script.Stop", { id: 1 }, null);
               });
             });
           });
