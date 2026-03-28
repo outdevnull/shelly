@@ -81,12 +81,11 @@ function log(level, msg) {
 }
 
 // ================= GITHUB — SMALL FILE (manifest) =================
-// Assembles full content in memory — only use for small files
 function githubGetSmall(file, callback) {
   let assembled = "";
   let offset    = 0;
 
-  function fetchNext() {
+  function doFetch() {
     let url = CF_WORKER + "/?file=" + cfg.path + "/" + file +
               "&ref=" + cfg.branch +
               "&offset=" + offset +
@@ -102,24 +101,38 @@ function githubGetSmall(file, callback) {
       let left = (res.headers && res.headers["X-Left"] !== undefined) ? (res.headers["X-Left"] * 1) : 0;
       offset   += res.body.length;
       if (left > 0) {
-        Timer.set(200, false, function() { fetchNext(); });
+        Timer.set(200, false, doFetch);
       } else {
         callback(assembled);
       }
     });
   }
 
-  fetchNext();
+  doFetch();
 }
 
 // ================= GITHUB — PIPELINED FETCH+DEPLOY =================
-// Fetches file in chunks and immediately PutCodes each chunk — never holds full file in memory
 function githubFetchAndDeploy(file, scriptId, isFirst, callback) {
-  let fetchOffset  = 0;
-  let deployOffset = 0;
-  let firstPut     = isFirst;
+  let fetchOffset = 0;
+  let firstPut    = isFirst;
 
-  function fetchNextChunk() {
+  function doPut(data, pos, left, putDone) {
+    if (pos >= data.length) { putDone(true); return; }
+    let piece  = data.slice(pos, pos + DEPLOY_CHUNK);
+    let append = !firstPut;
+    firstPut   = false;
+
+    shellyCall("Script.PutCode", { id: scriptId, code: piece, append: append }, function(res, err) {
+      if (err) {
+        log("ERROR", "PutCode failed script:" + scriptId + " err:" + JSON.stringify(err));
+        putDone(false);
+        return;
+      }
+      doPut(data, pos + piece.length, left, putDone);
+    });
+  }
+
+  function doFetch() {
     let url = CF_WORKER + "/?file=" + cfg.path + "/" + file +
               "&ref=" + cfg.branch +
               "&offset=" + fetchOffset +
@@ -136,10 +149,10 @@ function githubFetchAndDeploy(file, scriptId, isFirst, callback) {
       let left  = (res.headers && res.headers["X-Left"] !== undefined) ? (res.headers["X-Left"] * 1) : 0;
       fetchOffset += chunk.length;
 
-      putChunks(chunk, 0, left, function(ok) {
+      doPut(chunk, 0, left, function(ok) {
         if (!ok) { callback(false); return; }
         if (left > 0) {
-          Timer.set(200, false, function() { fetchNextChunk(); });
+          Timer.set(200, false, doFetch);
         } else {
           callback(true);
         }
@@ -147,25 +160,7 @@ function githubFetchAndDeploy(file, scriptId, isFirst, callback) {
     });
   }
 
-  // Splits a fetched chunk into DEPLOY_CHUNK sized PutCode calls
-  function putChunks(data, pos, left, callback) {
-    if (pos >= data.length) { callback(true); return; }
-    let piece   = data.slice(pos, pos + DEPLOY_CHUNK);
-    let append  = !firstPut;
-    firstPut    = false;
-    deployOffset += piece.length;
-
-    shellyCall("Script.PutCode", { id: scriptId, code: piece, append: append }, function(res, err) {
-      if (err) {
-        log("ERROR", "PutCode failed script:" + scriptId + " err:" + JSON.stringify(err));
-        callback(false);
-        return;
-      }
-      putChunks(data, pos + piece.length, left, callback);
-    });
-  }
-
-  fetchNextChunk();
+  doFetch();
 }
 
 // ================= VERSION =================
