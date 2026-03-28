@@ -1,348 +1,175 @@
 // version: 1.0.0
-// === Shelly Watchdog - GitHub Auto-Deploy & Script Monitor ===
-// Slot layout: 1=bootstrap 2=watchdog(permanent) 3+=app scripts
-// Self-update: creates temp slot, fetches new code, copies to slot 2, deletes self
+// === Shelly Watchdog ===
 
-let MANIFEST_FILE = "manifest.json";
-let CF_WORKER     = "https://shelly-proxy.ash-b39.workers.dev";
-let FETCH_CHUNK   = 4096;
-let DEPLOY_CHUNK  = 1024;
-let WD_SLOT       = 2;   // permanent watchdog home
-
-let selfId = Shelly.getCurrentScriptId();
-
-let cfg = {
-  branch: "",
-  path: "",
-  interval: 604800,
-  next_check: 300,
-  health_interval: 300,
-  rpc_delay: 200,
-  debug: true   // set wd.debug=0 in KVS to disable memory logging
-};
-
-let manifest    = null;
-let checkTimer  = null;
-let healthTimer = null;
+let MFIL = "manifest.json";
+let CFW  = "https://shelly-proxy.ash-b39.workers.dev";
+let FCHK = 4096;
+let PCHK = 1024;
+let WDSL = 2;
+let SLFI = Shelly.getCurrentScriptId();
 
 // ================= RPC QUEUE =================
-let rpcQueue = [];
-let rpcHead  = 0;
-let rpcBusy  = false;
+let rpcQ = [];
+let rpcH = 0;
+let rpcB = false;
+let rDly = 200;
 
-function shellyCall(method, params, callback) {
-  rpcQueue.push({ method: method, params: params, callback: callback });
-  drainQueue();
+function scll(m, p, cb) {
+  rpcQ.push({ m: m, p: p, cb: cb });
+  drnQ();
 }
 
-function drainQueue() {
-  if (rpcBusy || rpcHead >= rpcQueue.length) return;
-  rpcBusy = true;
-  let item = rpcQueue[rpcHead];
-  rpcHead++;
-  if (rpcHead > 20) {
+function drnQ() {
+  if (rpcB || rpcH >= rpcQ.length) return;
+  rpcB = true;
+  let it = rpcQ[rpcH];
+  rpcH++;
+  if (rpcH > 20) {
     let q = [];
-    for (let j = rpcHead; j < rpcQueue.length; j++) q.push(rpcQueue[j]);
-    rpcQueue = q;
-    rpcHead = 0;
+    for (let j = rpcH; j < rpcQ.length; j++) q.push(rpcQ[j]);
+    rpcQ = q; rpcH = 0;
   }
-  Timer.set(cfg.rpc_delay, false, function() {
-    Shelly.call(item.method, item.params, function(res, err) {
-      rpcBusy = false;
-      if (item.callback) item.callback(res, err);
-      drainQueue();
+  Timer.set(rDly, false, function() {
+    Shelly.call(it.m, it.p, function(r, e) {
+      rpcB = false;
+      if (it.cb) it.cb(r, e);
+      drnQ();
     });
   });
 }
 
 // ================= KVS =================
-function kvsGet(key, callback) {
-  shellyCall("KVS.Get", { key: key }, function(res, err) {
-    if (err || !res) { callback(null); return; }
-    callback(res.value);
+function kget(k, cb) {
+  scll("KVS.Get", { key: k }, function(r, e) {
+    cb((!e && r) ? r.value : null);
   });
 }
 
-function kvsSet(key, value, callback) {
-  shellyCall("KVS.Set", { key: key, value: String(value) }, function(res, err) {
-    if (callback) callback(!err);
+function kset(k, v, cb) {
+  scll("KVS.Set", { key: k, value: String(v) }, function(r, e) {
+    if (cb) cb(!e);
   });
 }
 
-// ================= LOGGING =================
-function log(level, msg) {
-  print("[" + level + "][" + selfId + "] " + msg);
-  shellyCall("MQTT.Publish", {
-    topic: "shelly/watchdog/" + level,
-    message: msg,
-    qos: 0,
-    retain: false
-  }, null);
+// ================= LOG =================
+function lg(lv, ms) {
+  print("[" + lv + "][" + SLFI + "] " + ms);
+  scll("MQTT.Publish", { topic: "shelly/watchdog/" + lv, message: ms, qos: 0, retain: false }, null);
 }
 
-function logMem(label) {
-  if (!cfg.debug) return;
-  let sys = Shelly.getComponentStatus("sys");
-  log("MEM", label + " free:" + sys.ram_free + "/" + sys.ram_size);
+function lmem(lb) {
+  let s = Shelly.getComponentStatus("sys");
+  lg("MEM", lb + " f:" + s.ram_free + "/" + s.ram_size);
 }
 
-// ================= GITHUB -- SMALL FILE =================
-function githubGetSmall(file, callback) {
-  let assembled = "";
-  let offset    = 0;
+// ================= FETCH SMALL =================
+function fgsm(fi, cb) {
+  let asm = "";
+  let off = 0;
+  function go() {
+    let br, pt;
+    kget("wd.br", function(b) { br = b;
+    kget("wd.pt", function(p) { pt = p;
+      let url = CFW + "/?file=" + pt + "/" + fi + "&ref=" + br + "&offset=" + off + "&len=" + FCHK;
+      Shelly.call("HTTP.GET", { url: url }, function(r, e) {
+        if (e || !r || r.code !== 200) { lg("ERR", "fetch:" + fi); cb(null); return; }
+        asm += r.body;
+        let lft = (r.headers && r.headers["X-Left"] !== undefined) ? (r.headers["X-Left"] * 1) : 0;
+        off += r.body.length;
+        r = null;
+        if (lft > 0) { Timer.set(200, false, go); } else { cb(asm); asm = null; }
+      });
+    }); });
+  }
+  go();
+}
 
-  function doFetch() {
-    let url = CF_WORKER + "/?file=" + cfg.path + "/" + file +
-              "&ref=" + cfg.branch + "&offset=" + offset + "&len=" + FETCH_CHUNK;
-    Shelly.call("HTTP.GET", { url: url }, function(res, err) {
-      if (err || !res || res.code !== 200) {
-        log("ERROR", "Fetch failed: " + file + " err:" + JSON.stringify(err));
-        callback(null);
-        return;
-      }
-      assembled += res.body;
-      let left = (res.headers && res.headers["X-Left"] !== undefined) ? (res.headers["X-Left"] * 1) : 0;
-      offset   += res.body.length;
-      if (left > 0) { Timer.set(200, false, doFetch); } else { callback(assembled); }
+// ================= FETCH+DEPLOY =================
+function gfad(fi, sid, cb) {
+  let fof = 0;
+  let fpt = true;
+  let br, pt;
+
+  function dput(da, po, lf, dn) {
+    if (po >= da.length) { da = null; dn(true); return; }
+    let pc = da.slice(po, po + PCHK);
+    let ap = !fpt;
+    fpt = false;
+    lmem("put:" + po);
+    scll("Script.PutCode", { id: sid, code: pc, append: ap }, function(r, e) {
+      pc = null; r = null;
+      if (e) { lg("ERR", "putcode:" + sid); dn(false); return; }
+      dput(da, po + PCHK, lf, dn);
     });
   }
 
-  doFetch();
-}
-
-// ================= GITHUB -- PIPELINED FETCH+DEPLOY =================
-function githubFetchAndDeploy(file, scriptId, callback) {
-  let fetchOffset = 0;
-  let firstPut    = true;
-
-  function doPut(data, pos, left, putDone) {
-    if (pos >= data.length) { data = null; putDone(true); return; }
-    let piece  = data.slice(pos, pos + DEPLOY_CHUNK);
-    let append = !firstPut;
-    firstPut   = false;
-    logMem("before putcode");
-    shellyCall("Script.PutCode", { id: scriptId, code: piece, append: append }, function(res, err) {
-      piece = null; res = null;
-      if (err) {
-        log("ERROR", "PutCode failed script:" + scriptId + " err:" + JSON.stringify(err));
-        putDone(false);
-        return;
-      }
-      logMem("after putcode");
-      doPut(data, pos + DEPLOY_CHUNK, left, putDone);
-    });
-  }
-
-  function doFetch() {
-    let url = CF_WORKER + "/?file=" + cfg.path + "/" + file +
-              "&ref=" + cfg.branch + "&offset=" + fetchOffset + "&len=" + FETCH_CHUNK;
-    logMem("before fetch offset:" + fetchOffset);
-    Shelly.call("HTTP.GET", { url: url }, function(res, err) {
-      if (err || !res || res.code !== 200) {
-        log("ERROR", "Fetch failed: " + file + " offset:" + fetchOffset);
-        callback(false);
-        return;
-      }
-      let chunk = res.body;
-      let left  = (res.headers && res.headers["X-Left"] !== undefined) ? (res.headers["X-Left"] * 1) : 0;
-      fetchOffset += chunk.length;
-      res = null;  // release response object before putting
-      logMem("after fetch chunk:" + chunk.length + " left:" + left);
-      doPut(chunk, 0, left, function(ok) {
-        chunk = null;
-        if (!ok) { callback(false); return; }
-        logMem("after doPut");
-        if (left > 0) { Timer.set(200, false, doFetch); } else { callback(true); }
+  function dftc() {
+    let url = CFW + "/?file=" + pt + "/" + fi + "&ref=" + br + "&offset=" + fof + "&len=" + FCHK;
+    lmem("ftc:" + fof);
+    Shelly.call("HTTP.GET", { url: url }, function(r, e) {
+      if (e || !r || r.code !== 200) { lg("ERR", "ftc:" + fi + ":" + fof); cb(false); return; }
+      let ck = r.body;
+      let lf = (r.headers && r.headers["X-Left"] !== undefined) ? (r.headers["X-Left"] * 1) : 0;
+      fof += ck.length;
+      r = null;
+      lmem("aft-ftc lf:" + lf);
+      dput(ck, 0, lf, function(ok) {
+        ck = null;
+        if (!ok) { cb(false); return; }
+        lmem("aft-put");
+        if (lf > 0) { Timer.set(200, false, dftc); } else { cb(true); }
       });
     });
   }
 
-  doFetch();
+  kget("wd.br", function(b) { br = b;
+  kget("wd.pt", function(p) { pt = p;
+    dftc();
+  }); });
 }
 
 // ================= VERSION =================
-function extractVersion(code) {
-  let end = code.indexOf("\n");
-  let firstLine = end > -1 ? code.slice(0, end) : code;
-  let marker = "// version: ";
-  let idx = firstLine.indexOf(marker);
-  if (idx === -1) return null;
-  return firstLine.slice(idx + marker.length).trim();
+function exvr(cd) {
+  let en = cd.indexOf("\n");
+  let fl = en > -1 ? cd.slice(0, en) : cd;
+  let mk = "// version: ";
+  let ix = fl.indexOf(mk);
+  if (ix === -1) return null;
+  return fl.slice(ix + mk.length).trim();
 }
 
-function getDeployedVersion(scriptId, callback) {
-  shellyCall("Script.GetCode", { id: scriptId, offset: 0, len: 20 }, function(res, err) {
-    if (err || !res) { callback(null); return; }
-    callback(extractVersion(res.data));
+function gdvr(sid, cb) {
+  scll("Script.GetCode", { id: sid, offset: 0, len: 20 }, function(r, e) {
+    cb((!e && r) ? exvr(r.data) : null);
   });
 }
 
-// ================= CONFIG PROVISIONING =================
-function configDiffers(desired, actual) {
-  if (actual === null || actual === undefined) return true;
-  let keys = Object.keys(desired);
-  for (let i = 0; i < keys.length; i++) {
-    let k = keys[i];
-    if (typeof desired[k] === "object" && desired[k] !== null) {
-      if (configDiffers(desired[k], actual[k])) return true;
-    } else {
-      if (desired[k] !== actual[k]) return true;
-    }
-  }
-  return false;
-}
-
-function provisionConfig(config, callback) {
-  let methods = Object.keys(config);
-  let i = 0;
-  function next() {
-    if (i >= methods.length) { callback(); return; }
-    let setM    = methods[i];
-    let desired = config[setM];
-    i++;
-    let getM = setM.replace("SetConfig", "GetConfig");
-    if (getM === setM) {
-      shellyCall(setM, desired, function(r, e) { if (e) log("WARN", "Failed: " + setM); next(); });
-      return;
-    }
-    shellyCall(getM, {}, function(res, err) {
-      if (!err && res && !configDiffers(desired.config, res)) { next(); return; }
-      shellyCall(setM, desired, function(r2, e2) {
-        if (e2) log("WARN", "Failed: " + setM);
-        else if (r2 && r2.restart_required) log("WARN", setM + " REBOOT REQUIRED");
-        else log("INFO", setM + " OK");
-        next();
-      });
-    });
-  }
-  next();
-}
-
-function provisionKvsConfig(kvsConfig, callback) {
-  let keys = Object.keys(kvsConfig);
-  let i = 0;
-  function next() {
-    if (i >= keys.length) { callback(); return; }
-    let key   = keys[i];
-    let entry = kvsConfig[key];
-    i++;
-    shellyCall("KVS.Get", { key: key }, function(res, err) {
-      if (!err && res) { next(); return; }
-      let getM = entry.method.replace("SetConfig", "GetConfig");
-      shellyCall(getM, {}, function(gr, ge) {
-        if (!ge && gr && !configDiffers(entry.config, gr)) {
-          shellyCall("KVS.Set", { key: key, value: "configured" }, function() { next(); });
-          return;
-        }
-        shellyCall(entry.method, { config: entry.config }, function(sr, se) {
-          if (se) log("WARN", "Failed kvsConfig: " + key);
-          else if (sr && sr.restart_required) log("WARN", key + " REBOOT REQUIRED");
-          else log("INFO", key + " OK");
-          shellyCall("KVS.Set", { key: key, value: "configured" }, function() { next(); });
-        });
-      });
-    });
-  }
-  next();
-}
-
-function provisionKvsDefaults(defaults, callback) {
-  let keys = Object.keys(defaults);
-  let i = 0;
-  function next() {
-    if (i >= keys.length) {
-      // Mark provisioning complete
-      Shelly.call("KVS.Set", { key: "wd.provisioned", value: "1" }, function() {
-        callback();
-      });
-      return;
-    }
-    let key = keys[i]; let val = defaults[key]; i++;
-    // Use direct Shelly.call -- not the RPC queue -- to avoid memory buildup
-    Shelly.call("KVS.Get", { key: key }, function(res, err) {
-      if (!err && res) { next(); return; }
-      Shelly.call("KVS.Set", { key: key, value: String(val) }, function(r2, e2) {
-        if (!e2) log("INFO", "KVS default: " + key + "=" + val);
-        next();
-      });
-    });
-  }
-  next();
-}
-
-function provisionComponents(components, callback) {
-  let i = 0;
-  function next() {
-    if (i >= components.length) { callback(); return; }
-    let comp = components[i]; i++;
-    let getM = (comp.type === "text") ? "Text.GetConfig" : "Number.GetConfig";
-    shellyCall(getM, { id: comp.id }, function(res, err) {
-      if (!err && res && res.name === comp.name) { next(); return; }
-      if (!err && res) {
-        let setM = (comp.type === "text") ? "Text.SetConfig" : "Number.SetConfig";
-        shellyCall(setM, { id: comp.id, config: { name: comp.name } }, function() {
-          log("INFO", "Renamed " + comp.type + ":" + comp.id + " to " + comp.name);
-          next();
-        });
-        return;
-      }
-      let addM = (comp.type === "text") ? "Text.Add" : "Number.Add";
-      shellyCall(addM, { id: comp.id, config: { name: comp.name } }, function(r2, e2) {
-        if (e2) log("ERROR", "Failed to create " + comp.type + ":" + comp.id);
-        else log("INFO", "Created " + comp.type + ":" + comp.id + " name:" + comp.name);
-        next();
-      });
-    });
-  }
-  next();
-}
-
 // ================= SELF UPDATE =================
-// If running in permanent slot -- create temp slot, deploy new code, start it
-// If running in temp slot -- redeploy to permanent slot, start it, delete self
-function handleSelfUpdate(remoteVersion) {
-  if (selfId === WD_SLOT) {
-    // Running in permanent slot -- spawn temp updater
-    log("INFO", "New watchdog v" + remoteVersion + " -- creating temp slot");
-    shellyCall("Script.Create", { name: "watchdog_update" }, function(res, err) {
-      if (err || !res) { log("ERROR", "Failed to create temp slot"); return; }
-      let tempId = res.id;
-      log("INFO", "Deploying v" + remoteVersion + " to temp slot " + tempId);
-      githubFetchAndDeploy("watchdog.js", tempId, function(ok) {
-        if (!ok) {
-          log("ERROR", "Failed to deploy to temp slot");
-          shellyCall("Script.Delete", { id: tempId }, null);
-          return;
-        }
-        kvsSet("s." + tempId + ".ok", "1", function() {
-          shellyCall("Script.Start", { id: tempId }, function(r2, e2) {
-            if (e2) {
-              log("ERROR", "Failed to start temp slot " + tempId);
-              shellyCall("Script.Delete", { id: tempId }, null);
-            } else {
-              log("INFO", "Temp slot " + tempId + " started -- handing over");
-            }
+function hsup(rv) {
+  if (SLFI === WDSL) {
+    lg("INFO", "new v" + rv + " spawning temp");
+    scll("Script.Create", { name: "wdup" }, function(r, e) {
+      if (e || !r) { lg("ERR", "create temp"); return; }
+      let tid = r.id;
+      gfad("watchdog.js", tid, function(ok) {
+        if (!ok) { scll("Script.Delete", { id: tid }, null); return; }
+        kset("s." + tid + ".ok", "1", function() {
+          scll("Script.Start", { id: tid }, function(r2, e2) {
+            if (e2) { scll("Script.Delete", { id: tid }, null); }
+            else { lg("INFO", "temp " + tid + " started"); }
           });
         });
       });
     });
   } else {
-    // Running in temp slot -- redeploy to permanent slot then clean up
-    log("INFO", "Temp slot " + selfId + " -- redeploying to permanent slot " + WD_SLOT);
-    shellyCall("Script.Stop", { id: WD_SLOT }, function() {
-      githubFetchAndDeploy("watchdog.js", WD_SLOT, function(ok) {
-        if (!ok) {
-          log("ERROR", "Failed to redeploy to slot " + WD_SLOT);
-          return;
-        }
-        shellyCall("Script.Start", { id: WD_SLOT }, function(r2, e2) {
-          if (e2) {
-            log("ERROR", "Failed to start slot " + WD_SLOT);
-            return;
-          }
-          log("INFO", "Slot " + WD_SLOT + " updated -- deleting temp slot " + selfId);
-          shellyCall("Script.Stop",   { id: selfId }, function() {
-            shellyCall("Script.Delete", { id: selfId }, null);
+    lg("INFO", "temp " + SLFI + " -> slot " + WDSL);
+    scll("Script.Stop", { id: WDSL }, function() {
+      gfad("watchdog.js", WDSL, function(ok) {
+        if (!ok) { lg("ERR", "redeploy fail"); return; }
+        scll("Script.Start", { id: WDSL }, function(r2, e2) {
+          if (e2) { lg("ERR", "start slot " + WDSL); return; }
+          scll("Script.Stop",   { id: SLFI }, function() {
+            scll("Script.Delete", { id: SLFI }, null);
           });
         });
       });
@@ -350,296 +177,303 @@ function handleSelfUpdate(remoteVersion) {
   }
 }
 
-// ================= SCRIPT DEPLOY =================
-function deployScript(script, callback) {
-  kvsSet("s." + script.id + ".ok", "0", function() {
-    shellyCall("Script.GetStatus", { id: script.id }, function(res, err) {
-      let running = (!err && res && res.running);
-      function doWrite() {
-        githubFetchAndDeploy(script.file, script.id, function(ok) {
-          if (!ok) { log("ERROR", "Deploy failed: " + script.name); callback(false); return; }
-          kvsSet("s." + script.id + ".ok", "1", function() {
-            log("INFO", "Deployed: " + script.name);
-            if (!script.autostart) { callback(true); return; }
-            shellyCall("Script.Start", { id: script.id }, function(r2, e2) {
-              if (e2) {
-                log("ERROR", "Failed to start: " + script.name);
-                kvsSet("s." + script.id + ".ok", "0", null);
-                callback(false);
-                return;
-              }
+// ================= DEPLOY SCRIPT =================
+function dpsc(sc, cb) {
+  kset("s." + sc.id + ".ok", "0", function() {
+    scll("Script.GetStatus", { id: sc.id }, function(r, e) {
+      let rn = (!e && r && r.running);
+      function dwr() {
+        gfad(sc.file, sc.id, function(ok) {
+          if (!ok) { lg("ERR", "deploy:" + sc.name); cb(false); return; }
+          kset("s." + sc.id + ".ok", "1", function() {
+            lg("INFO", "deployed:" + sc.name);
+            if (!sc.autostart) { cb(true); return; }
+            scll("Script.Start", { id: sc.id }, function(r2, e2) {
+              if (e2) { kset("s." + sc.id + ".ok", "0", null); cb(false); return; }
               Timer.set(5000, false, function() {
-                shellyCall("Script.GetStatus", { id: script.id }, function(r3) {
-                  if (!r3 || !r3.running) {
-                    log("ERROR", script.name + " failed to stay running");
-                    kvsSet("s." + script.id + ".ok", "0", null);
-                    callback(false);
-                  } else {
-                    callback(true);
-                  }
+                scll("Script.GetStatus", { id: sc.id }, function(r3) {
+                  if (!r3 || !r3.running) { kset("s." + sc.id + ".ok", "0", null); cb(false); }
+                  else { cb(true); }
                 });
               });
             });
           });
         });
       }
-      if (running) {
-        shellyCall("Script.Stop", { id: script.id }, function() { doWrite(); });
-      } else {
-        doWrite();
-      }
+      if (rn) { scll("Script.Stop", { id: sc.id }, function() { dwr(); }); }
+      else { dwr(); }
     });
   });
 }
 
 // ================= HEALTH CHECK =================
-function healthCheck(scripts, callback) {
-  let i = 0;
-  let forceRedeploy = false;
-  function next() {
-    if (i >= scripts.length) { callback(forceRedeploy); return; }
-    let script = scripts[i]; i++;
-    if (!script.autostart || script.id === WD_SLOT) { next(); return; }
-    shellyCall("Script.GetStatus", { id: script.id }, function(res, err) {
-      if (!err && res && res.running) {
-        kvsSet("s." + script.id + ".fails", "0", null);
-        next();
-        return;
-      }
-      kvsGet("s." + script.id + ".fails", function(val) {
-        let fails = val ? (val * 1) : 0;
-        fails++;
-        if (fails >= 3) {
-          log("WARN", "Script " + script.id + " failed 3x -- forcing redeploy");
-          kvsSet("s." + script.id + ".ok", "0", null);
-          kvsSet("s." + script.id + ".fails", "0", null);
-          forceRedeploy = true;
-          next();
+function hlth(sc, cb) {
+  let i = 0; let frc = false;
+  function nx() {
+    if (i >= sc.length) { cb(frc); return; }
+    let s = sc[i]; i++;
+    if (!s.autostart || s.id === WDSL) { nx(); return; }
+    scll("Script.GetStatus", { id: s.id }, function(r, e) {
+      if (!e && r && r.running) { kset("s." + s.id + ".fails", "0", null); nx(); return; }
+      kget("s." + s.id + ".fails", function(v) {
+        let fl = v ? (v * 1) : 0; fl++;
+        if (fl >= 3) {
+          lg("WARN", "s:" + s.id + " fail3 redeploy");
+          kset("s." + s.id + ".ok", "0", null);
+          kset("s." + s.id + ".fails", "0", null);
+          frc = true; nx();
         } else {
-          kvsSet("s." + script.id + ".fails", String(fails), function() {
-            log("WARN", "Script " + script.id + " not running, restart " + fails + "/3");
-            shellyCall("Script.Start", { id: script.id }, function() { next(); });
+          kset("s." + s.id + ".fails", String(fl), function() {
+            lg("WARN", "s:" + s.id + " restart " + fl + "/3");
+            scll("Script.Start", { id: s.id }, function() { nx(); });
           });
         }
       });
     });
   }
-  next();
+  nx();
 }
 
 // ================= VERSION CYCLE =================
-function checkForcedFlags(scripts, callback) {
-  let flags = [];
-  let i = 0;
-  function next() {
-    if (i >= scripts.length) { callback(flags); return; }
-    let script = scripts[i]; i++;
-    kvsGet("s." + script.id + ".ok", function(val) {
-      flags.push(val === "0");
-      next();
-    });
+function chkf(sc, cb) {
+  let fl = []; let i = 0;
+  function nx() {
+    if (i >= sc.length) { cb(fl); return; }
+    let s = sc[i]; i++;
+    kget("s." + s.id + ".ok", function(v) { fl.push(v === "0"); nx(); });
   }
-  next();
+  nx();
 }
 
-function checkAndDeployScript(scripts, i, forcedFlags, anyDeployed, callback) {
-  if (i >= scripts.length) { callback(anyDeployed); return; }
-  let script = scripts[i];
-  let forced = forcedFlags[i];
+function cads(sc, i, ff, ad, cb) {
+  if (i >= sc.length) { cb(ad); return; }
+  let s = sc[i]; let fc = ff[i];
+  if (s.id === WDSL) { cads(sc, i + 1, ff, ad, cb); return; }
 
-  // Skip watchdog slot -- handled by checkWatchdogUpdate
-  if (script.id === WD_SLOT) {
-    checkAndDeployScript(scripts, i + 1, forcedFlags, anyDeployed, callback);
-    return;
-  }
-
-  let versionUrl = CF_WORKER + "/?file=" + cfg.path + "/" + script.file +
-                   "&ref=" + cfg.branch + "&offset=0&len=20";
-
-  Shelly.call("HTTP.GET", { url: versionUrl }, function(res, err) {
-    if (err || !res || res.code !== 200) {
-      log("ERROR", "Version check failed: " + script.file + " -- skipping");
-      checkAndDeployScript(scripts, i + 1, forcedFlags, anyDeployed, callback);
-      return;
-    }
-    let remoteVersion = extractVersion(res.body);
-    getDeployedVersion(script.id, function(localVersion) {
-      log("INFO", script.name + " local:" + localVersion + " remote:" + remoteVersion);
-      if (!forced && localVersion === remoteVersion) {
-        checkAndDeployScript(scripts, i + 1, forcedFlags, anyDeployed, callback);
-        return;
+  kget("wd.br", function(br) {
+  kget("wd.pt", function(pt) {
+    let vu = CFW + "/?file=" + pt + "/" + s.file + "&ref=" + br + "&offset=0&len=20";
+    Shelly.call("HTTP.GET", { url: vu }, function(r, e) {
+      if (e || !r || r.code !== 200) {
+        lg("ERR", "ver chk:" + s.file);
+        cads(sc, i + 1, ff, ad, cb); return;
       }
-      deployScript(script, function(ok) {
-        checkAndDeployScript(scripts, i + 1, forcedFlags, true, callback);
+      let rv = exvr(r.body); r = null;
+      gdvr(s.id, function(lv) {
+        lg("INFO", s.name + " l:" + lv + " r:" + rv);
+        if (!fc && lv === rv) { cads(sc, i + 1, ff, ad, cb); return; }
+        dpsc(s, function(ok) { cads(sc, i + 1, ff, true, cb); });
       });
     });
-  });
+  }); });
 }
 
-function checkWatchdogUpdate(callback) {
-  let url = CF_WORKER + "/?file=" + cfg.path + "/watchdog.js" +
-            "&ref=" + cfg.branch + "&offset=0&len=20";
-  Shelly.call("HTTP.GET", { url: url }, function(res, err) {
-    if (err || !res || res.code !== 200) {
-      log("WARN", "Could not check watchdog version");
-      callback(false);
-      return;
-    }
-    let remoteVersion = extractVersion(res.body);
-    getDeployedVersion(WD_SLOT, function(localVersion) {
-      log("INFO", "Watchdog local:" + localVersion + " remote:" + remoteVersion);
-      if (remoteVersion && localVersion !== remoteVersion) {
-        handleSelfUpdate(remoteVersion);
-        callback("updated");
-      } else {
-        callback(false);
-      }
+function cwup(cb) {
+  kget("wd.br", function(br) {
+  kget("wd.pt", function(pt) {
+    let u = CFW + "/?file=" + pt + "/watchdog.js&ref=" + br + "&offset=0&len=20";
+    Shelly.call("HTTP.GET", { url: u }, function(r, e) {
+      if (e || !r || r.code !== 200) { lg("WARN", "wd ver chk fail"); cb(false); return; }
+      let rv = exvr(r.body); r = null;
+      gdvr(WDSL, function(lv) {
+        lg("INFO", "wd l:" + lv + " r:" + rv);
+        if (rv && lv !== rv) { hsup(rv); cb("upd"); }
+        else { cb(false); }
+      });
     });
-  });
+  }); });
 }
 
 // ================= CYCLES =================
-function runHealthCycle() {
-  if (!manifest) { scheduleHealth(); return; }
-  healthCheck(manifest.scripts, function(forceRedeploy) {
-    if (forceRedeploy) {
-      if (checkTimer) { Timer.clear(checkTimer); checkTimer = null; }
-      log("INFO", "Health check triggered version cycle");
-      runVersionCycle();
+let ctmr = null;
+let htmr = null;
+let mfst = null;
+
+function rhcy() {
+  if (!mfst) { shcy(); return; }
+  hlth(mfst.scripts, function(frc) {
+    if (frc) {
+      if (ctmr) { Timer.clear(ctmr); ctmr = null; }
+      lg("INFO", "hlth->ver cycle");
+      rvcl();
     }
-    scheduleHealth();
+    shcy();
   });
 }
 
-function runVersionCycle() {
-  if (checkTimer) { Timer.clear(checkTimer); checkTimer = null; }
-  log("INFO", "Version cycle starting");
+function rvcl() {
+  if (ctmr) { Timer.clear(ctmr); ctmr = null; }
+  lg("INFO", "ver cycle");
+  cwup(function(rs) {
+    if (rs === "upd") return;
+    fgsm(MFIL, function(bd) {
+      if (!bd) { lg("ERR", "manifest fail"); snxt(300); return; }
+      try { mfst = JSON.parse(bd); bd = null; } catch(e) { lg("ERR", "manifest parse"); snxt(300); return; }
 
-  checkWatchdogUpdate(function(result) {
-    if (result === "updated") return;
-
-    githubGetSmall(MANIFEST_FILE, function(body) {
-      if (!body) { log("ERROR", "Failed to fetch manifest"); scheduleNext(300); return; }
-      try { manifest = JSON.parse(body); } catch(e) {
-        log("ERROR", "Failed to parse manifest");
-        scheduleNext(300);
-        return;
-      }
-
-      function doVersionCheck() {
-        checkForcedFlags(manifest.scripts, function(flags) {
-          checkAndDeployScript(manifest.scripts, 0, flags, false, function(anyDeployed) {
-            if (anyDeployed) {
-              cfg.next_check = 300;
-              kvsSet("wd.next_check", "300", null);
-              scheduleNext(300);
-            } else {
-              let n = cfg.next_check * 2;
-              if (n > cfg.interval) n = cfg.interval;
-              cfg.next_check = n;
-              kvsSet("wd.next_check", String(n), null);
-              scheduleNext(n);
-            }
+      function dvc() {
+        chkf(mfst.scripts, function(fl) {
+          cads(mfst.scripts, 0, fl, false, function(ad) {
+            kget("wd.nc", function(nc) {
+              kget("wd.iv", function(iv) {
+                let mxiv = iv ? (iv * 1) : 604800;
+                if (ad) {
+                  kset("wd.nc", "300", null); snxt(300);
+                } else {
+                  let n = (nc ? (nc * 1) : 300) * 2;
+                  if (n > mxiv) n = mxiv;
+                  kset("wd.nc", String(n), null); snxt(n);
+                }
+              });
+            });
           });
         });
       }
 
-      // Only provision on first boot or after KVS wipe
-      Shelly.call("KVS.Get", { key: "wd.provisioned" }, function(res, err) {
-        if (!err && res && res.value === "1") {
-          log("INFO", "Already provisioned -- skipping");
-          doVersionCheck();
-        } else {
-          log("INFO", "Provisioning device...");
-          provisionComponents(manifest.components, function() {
-            provisionConfig(manifest.config || {}, function() {
-              provisionKvsDefaults(manifest.kvsDefaults || {}, function() {
-                provisionKvsConfig(manifest.kvsConfig || {}, function() {
-                  doVersionCheck();
-                });
-              });
-            });
-          });
-        }
+      Shelly.call("KVS.Get", { key: "wd.pv" }, function(r, e) {
+        if (!e && r && r.value === "1") { lg("INFO", "prov skip"); dvc(); }
+        else { prov(mfst, function() { dvc(); }); }
       });
     });
   });
 }
 
-// ================= SCHEDULING =================
-function scheduleHealth() {
-  healthTimer = Timer.set(cfg.health_interval * 1000, false, function() { runHealthCycle(); });
+// ================= PROVISION =================
+function prov(mf, cb) {
+  lg("INFO", "provisioning...");
+  prvc(mf.components || [], function() {
+    prfx(mf.config || {}, false, function() {
+      prvd(mf.kvsDefaults || {}, function() {
+        prfx(mf.kvsConfig || {}, true, function() {
+          cb();
+        });
+      });
+    });
+  });
 }
 
-function scheduleNext(seconds) {
-  log("INFO", "Next check in " + seconds + "s");
-  checkTimer = Timer.set(seconds * 1000, false, function() { runVersionCycle(); });
+function cdif(ds, ac) {
+  if (ac === null || ac === undefined) return true;
+  let ks = Object.keys(ds);
+  for (let i = 0; i < ks.length; i++) {
+    let k = ks[i];
+    if (typeof ds[k] === "object" && ds[k] !== null) { if (cdif(ds[k], ac[k])) return true; }
+    else { if (ds[k] !== ac[k]) return true; }
+  }
+  return false;
+}
+
+function prfx(cf, ckv, cb) {
+  let ks = Object.keys(cf); let i = 0;
+  function nx() {
+    if (i >= ks.length) { cb(); return; }
+    let ky = ks[i]; let en = ckv ? cf[ky] : null; i++;
+    let sm = ckv ? en.method : ky;
+    let ds = ckv ? en.config : cf[ky].config;
+
+    function ap() {
+      let gm = sm.replace("SetConfig", "GetConfig");
+      if (gm === sm) { scll(sm, { config: ds }, function(r, e) { if (e) lg("WARN", "fail:" + sm); nx(); }); return; }
+      scll(gm, {}, function(r, e) {
+        if (!e && r && !cdif(ds, r)) {
+          if (ckv) scll("KVS.Set", { key: ky, value: "configured" }, function() { nx(); });
+          else nx();
+          return;
+        }
+        scll(sm, { config: ds }, function(r2, e2) {
+          if (e2) lg("WARN", "fail:" + sm);
+          else if (r2 && r2.restart_required) lg("WARN", sm + " REBOOT");
+          else lg("INFO", sm + " ok");
+          if (ckv) scll("KVS.Set", { key: ky, value: "configured" }, function() { nx(); });
+          else nx();
+        });
+      });
+    }
+
+    if (ckv) {
+      scll("KVS.Get", { key: ky }, function(r, e) { if (!e && r) { nx(); return; } ap(); });
+    } else { ap(); }
+  }
+  nx();
+}
+
+function prvd(df, cb) {
+  let ks = Object.keys(df); let i = 0;
+  function nx() {
+    if (i >= ks.length) {
+      Shelly.call("KVS.Set", { key: "wd.pv", value: "1" }, function() { cb(); });
+      return;
+    }
+    let k = ks[i]; let v = df[k]; i++;
+    Shelly.call("KVS.Get", { key: k }, function(r, e) {
+      if (!e && r) { nx(); return; }
+      Shelly.call("KVS.Set", { key: k, value: String(v) }, function() { nx(); });
+    });
+  }
+  nx();
+}
+
+function prvc(cp, cb) {
+  let i = 0;
+  function nx() {
+    if (i >= cp.length) { cb(); return; }
+    let c = cp[i]; i++;
+    let gm = (c.type === "text") ? "Text.GetConfig" : "Number.GetConfig";
+    scll(gm, { id: c.id }, function(r, e) {
+      if (!e && r && r.name === c.name) { nx(); return; }
+      if (!e && r) {
+        let sm = (c.type === "text") ? "Text.SetConfig" : "Number.SetConfig";
+        scll(sm, { id: c.id, config: { name: c.name } }, function() { lg("INFO", "ren " + c.type + ":" + c.id); nx(); });
+        return;
+      }
+      let am = (c.type === "text") ? "Text.Add" : "Number.Add";
+      scll(am, { id: c.id, config: { name: c.name } }, function(r2, e2) {
+        if (e2) lg("ERR", "cre " + c.type + ":" + c.id); else lg("INFO", "cre " + c.type + ":" + c.id);
+        nx();
+      });
+    });
+  }
+  nx();
+}
+
+function shcy() {
+  kget("wd.hi", function(hi) {
+    htmr = Timer.set((hi ? (hi * 1) : 300) * 1000, false, function() { rhcy(); });
+  });
+}
+
+function snxt(s) {
+  lg("INFO", "nxt:" + s + "s");
+  ctmr = Timer.set(s * 1000, false, function() { rvcl(); });
 }
 
 // ================= BOOT =================
 function boot() {
-  log("INFO", "Watchdog booting. selfId:" + selfId);
+  lg("INFO", "boot slfi:" + SLFI);
 
-  // If running in temp slot -- immediately handle self-update
-  if (selfId !== WD_SLOT) {
-    log("INFO", "Running in temp slot " + selfId + " -- redeploying to slot " + WD_SLOT);
-    // Load config first so CF Worker URL etc are available
-    kvsGet("wd.branch", function(branch) {
-      kvsGet("wd.path", function(path) {
-        if (!branch || !path) { log("ERROR", "Missing wd.branch or wd.path"); return; }
-        cfg.branch = branch;
-        cfg.path   = path;
-        handleSelfUpdate(null);
+  if (SLFI !== WDSL) {
+    lg("INFO", "temp " + SLFI + " -> " + WDSL);
+    kget("wd.br", function(br) {
+      kget("wd.pt", function(pt) {
+        if (!br || !pt) { lg("ERR", "no br/pt"); return; }
+        hsup(null);
       });
     });
     return;
   }
 
-  // Running in permanent slot -- normal boot
-  kvsGet("wd.branch", function(branch) {
-    kvsGet("wd.path", function(path) {
-      kvsGet("wd.interval", function(interval) {
-        kvsGet("wd.next_check", function(next_check) {
-          kvsGet("wd.health_interval", function(health_interval) {
-            kvsGet("wd.rpc_delay", function(rpc_delay) {
-            kvsGet("wd.debug", function(debug) {
-
-              if (!branch || !path) {
-                log("ERROR", "Missing wd.branch or wd.path -- halting");
-                return;
-              }
-
-              cfg.branch          = branch;
-              cfg.path            = path;
-              cfg.interval        = interval        ? (interval * 1)        : 604800;
-              cfg.next_check      = next_check      ? (next_check * 1)      : 300;
-              cfg.health_interval = health_interval ? (health_interval * 1) : 300;
-              cfg.rpc_delay       = rpc_delay       ? (rpc_delay * 1)       : 200;
-              cfg.debug           = (debug === null) ? true : (debug !== "0");
-
-              log("INFO", "Config loaded. branch:" + cfg.branch + " path:" + cfg.path);
-
-              // Stop bootstrapper (slot 1) to free RAM -- it's not needed while watchdog runs
-              Shelly.call("Script.GetStatus", { id: 1 }, function(sr, se) {
-                if (!se && sr && sr.running) {
-                  Shelly.call("Script.Stop", { id: 1 }, function() {
-                    log("INFO", "Bootstrapper stopped");
-                    runVersionCycle();
-                    scheduleHealth();
-                  });
-                } else {
-                  runVersionCycle();
-                  scheduleHealth();
-                }
-              });
-            });
-            });
-          });
+  kget("wd.rd", function(rd) {
+    rDly = rd ? (rd * 1) : 200;
+    Shelly.call("Script.GetStatus", { id: 1 }, function(sr, se) {
+      if (!se && sr && sr.running) {
+        Shelly.call("Script.Stop", { id: 1 }, function() {
+          lg("INFO", "bstp stopped");
+          rvcl(); shcy();
         });
-      });
+      } else {
+        rvcl(); shcy();
+      }
     });
   });
 }
 
-// ================= ENTRY =================
 Timer.set(2000, false, function() { boot(); });
