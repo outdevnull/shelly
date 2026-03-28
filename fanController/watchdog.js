@@ -54,7 +54,9 @@ function kset(k, v, cb) {
 // ================= LOG =================
 function lg(lv, ms) {
   print("[" + lv + "][" + SLFI + "] " + ms);
-  scll("MQTT.Publish", { topic: "shelly/watchdog/" + lv, message: ms, qos: 0, retain: false }, null);
+  if (MQTT.isConnected()) {
+    scll("MQTT.Publish", { topic: "shelly/watchdog/" + lv, message: ms, qos: 0, retain: false }, null);
+  }
 }
 
 function lmem(lb) {
@@ -327,6 +329,7 @@ function rvcl() {
       function dvc() {
         chkf(mfst.scripts, function(fl) {
           cads(mfst.scripts, 0, fl, false, function(ad) {
+            mfst = null;
             kget("wd.nc", function(nc) {
               kget("wd.iv", function(iv) {
                 let mxiv = iv ? (iv * 1) : 604800;
