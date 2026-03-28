@@ -1,4 +1,4 @@
-// version: 1.0.6
+// version: 1.0.7
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
@@ -143,9 +143,7 @@ function gdvr(sid, cb) {
 function hsup(rv) {
   if (SLFI === WDSL) {
     lg("INFO", "new v" + rv + " spawning temp");
-    // Stop other scripts first to free mJS heap for deploy
     scll("Script.Stop", { id: 3 }, function() {
-      // Clean up any orphaned wdup slot first
       scll("Script.List", {}, function(r, e) {
         let oldId = null;
         if (!e && r && r.scripts) {
@@ -184,7 +182,6 @@ function hsup(rv) {
         if (!ok) { lg("ERR", "redeploy fail"); return; }
         scll("Script.Start", { id: WDSL }, function(r2, e2) {
           if (e2) { lg("ERR", "start slot " + WDSL); return; }
-          // Restart fan controller that was stopped for heap space
           scll("Script.Start", { id: 3 }, function() {
             lg("INFO", "slot " + WDSL + " updated -- deleting temp " + SLFI);
             Shelly.call("Script.Delete", { id: SLFI }, null);
@@ -222,7 +219,6 @@ function dpsc(sc, cb) {
         if (rn) { scll("Script.Stop", { id: sc.id }, function() { dwr(); }); }
         else { dwr(); }
       }
-      // If script doesn't exist yet (-105 or null result), create it first
       if (e || !r) {
         scll("Script.Create", { name: sc.name }, function(r2, e2) {
           if (e2) { lg("ERR", "create:" + sc.name); cb(false); return; }
@@ -309,7 +305,7 @@ function cwup(cb) {
       let rv = exvr(r.body); r = null;
       gdvr(WDSL, function(lv) {
         lg("INFO", "wd l:" + lv + " r:" + rv);
-        if (rv && lv !== rv) { hsup(rv); cb("upd"); }
+        if (rv && lv !== rv) { hsup(rv); kset("wd.nc", "300", null); cb("upd"); }
         else { cb(false); }
       });
     });
@@ -496,6 +492,7 @@ function boot() {
 
   kget("wd.rd", function(rd) {
     rDly = rd ? (rd * 1) : 200;
+    kset("wd.nc", "300", null);  // reset backoff on boot
     Shelly.call("Script.GetStatus", { id: 1 }, function(sr, se) {
       if (!se && sr && sr.running) {
         Shelly.call("Script.Stop", { id: 1 }, function() {
