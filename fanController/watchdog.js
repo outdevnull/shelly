@@ -1,4 +1,4 @@
-// version: 1.2.0
+// version: 1.2.1
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
@@ -494,7 +494,7 @@ function prfx(cf, ckv, cb) {
       if (gm === sm) { scll(sm, { config: ds }, function(r, e) { if (e) lg("WARN", "fail:" + sm); nx(); }); return; }
       scll(gm, {}, function(r, e) {
         if (!e && r && !cdif(ds, r)) {
-          if (ckv) scll("KVS.Set", { key: ky, value: "configured" }, function() { nx(); });
+          if (ckv) scll("KVS.Set", { key: ky, value: JSON.stringify(ds) }, function() { nx(); });
           else nx();
           return;
         }
@@ -502,14 +502,14 @@ function prfx(cf, ckv, cb) {
           if (e2) lg("WARN", "fail:" + sm);
           else if (r2 && r2.restart_required) lg("WARN", sm + " REBOOT");
           else lg("INFO", sm + " ok");
-          if (ckv) scll("KVS.Set", { key: ky, value: "configured" }, function() { nx(); });
+          if (ckv) scll("KVS.Set", { key: ky, value: JSON.stringify(ds) }, function() { nx(); });
           else nx();
         });
       });
     }
 
     if (ckv) {
-      scll("KVS.Get", { key: ky }, function(r, e) { if (!e && r) { nx(); return; } ap(); });
+      scll("KVS.Get", { key: ky }, function(r, e) { if (!e && r && r.value !== "configured") { nx(); return; } ap(); });
     } else { ap(); }
   }
   nx();
