@@ -97,7 +97,6 @@ function gfad(fi, sid, cb) {
     let pc = da.slice(po, po + PCHK);
     let ap = !fpt;
     fpt = false;
-    lmem("put:" + po);
     Shelly.call("Script.PutCode", { id: sid, code: pc, append: ap }, function(r, e) {
       pc = null; r = null;
       if (e) { lg("ERR", "putcode:" + sid); dn(false); return; }
@@ -107,18 +106,15 @@ function gfad(fi, sid, cb) {
 
   function dftc() {
     let url = CFW + "/?file=" + pt + "/" + fi + "&ref=" + br + "&offset=" + fof + "&len=" + FCHK;
-    lmem("ftc:" + fof);
     Shelly.call("HTTP.GET", { url: url }, function(r, e) {
       if (e || !r || r.code !== 200) { lg("ERR", "ftc:" + fi + ":" + fof); cb(false); return; }
       let ck = r.body;
       let lf = (r.headers && r.headers["X-Left"] !== undefined) ? (r.headers["X-Left"] * 1) : 0;
       fof += ck.length;
       r = null;
-      lmem("aft-ftc lf:" + lf);
       dput(ck, 0, lf, function(ok) {
         ck = null;
         if (!ok) { cb(false); return; }
-        lmem("aft-put");
         if (lf > 0) { Timer.set(200, false, dftc); } else { cb(true); }
       });
     });
