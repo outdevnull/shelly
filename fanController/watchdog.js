@@ -1,4 +1,4 @@
-// version: 1.1.8
+// version: 1.1.9
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
@@ -430,7 +430,7 @@ function rvcl() {
             for (let j = 0; j < dk.length; j++) kl.push(dk[j]);
             for (let j = 0; j < ck.length; j++) kl.push(ck[j]);
             mfst = null;
-            gkrs(kl, function() {
+            function sched() {
               kget("wd.nc", function(nc) {
                 kget("wd.iv", function(iv) {
                   let mxiv = iv ? (iv * 1) : 604800;
@@ -443,7 +443,8 @@ function rvcl() {
                   }
                 });
               });
-            });
+            }
+            if (ad) { gkrs(kl, function() { sched(); }); } else { sched(); }
           });
         });
       }
