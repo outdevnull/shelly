@@ -1,4 +1,4 @@
-// version: 1.1.5
+// version: 1.1.6
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
@@ -391,7 +391,7 @@ function gkrs(kl, cb) {
     Shelly.call("Script.PutCode", { id: id, code: ftr, append: true }, function(r, e) {
       ftr = null;
       if (e) { lg("ERR", "kvs_restore ftr"); cb(); return; }
-      Shelly.call("Script.SetConfig", { id: id, config: { enable: true } }, null);
+      Shelly.call("Script.SetConfig", { id: id, config: { enable: false } }, null);
       lg("INFO", "kvs_restore deployed id:" + id);
       cb();
     });
@@ -625,21 +625,24 @@ function boot() {
           }
         });
       }
-      // Always wait for kvs_restore to finish before proceeding.
-      // On normal reboot wd.br is present but kvs_restore still runs
-      // from autostart -- concurrent RPC load with provisioning causes OOM.
-      wkr(function() {
-        if (!br) {
-          lg("WARN", "KVS empty after restore");
-          // Re-read wd.rd in case it was restored with a non-default value
-          kget("wd.rd", function(rd2) {
-            rDly = rd2 ? (rd2 * 1) : 200;
-            proceed();
+      if (!br) {
+        // KVS wiped -- start kvs_restore explicitly and wait for it to finish
+        lg("WARN", "KVS empty, starting kvs_restore");
+        fksl(function(sid) {
+          if (sid === null) { lg("WARN", "no kvs_restore slot"); proceed(); return; }
+          Shelly.call("Script.Start", { id: sid }, function() {
+            wkr(function() {
+              // Re-read wd.rd in case it was restored with a non-default value
+              kget("wd.rd", function(rd2) {
+                rDly = rd2 ? (rd2 * 1) : 200;
+                proceed();
+              });
+            });
           });
-        } else {
-          proceed();
-        }
-      });
+        });
+      } else {
+        proceed();
+      }
     });
   });
 }
