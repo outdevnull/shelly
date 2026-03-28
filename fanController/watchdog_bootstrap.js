@@ -1,9 +1,9 @@
 // version: 1.0.0
 // === Shelly Watchdog Bootstrapper ===
-// Fetches watchdog.js in chunks, immediately PutCode each chunk — no full file in memory.
-// Writes to Script 99, starts it, then exits.
+// Permanent script in slot 1 — run manually to bootstrap or re-bootstrap.
+// Creates Script 2, fetches watchdog.js in chunks, deploys and starts it.
 
-let SCRIPT_ID    = 99;
+let SCRIPT_ID    = 2;
 let FETCH_CHUNK  = 4096;
 let DEPLOY_CHUNK = 1024;
 let CF_WORKER    = "https://shelly-proxy.ash-b39.workers.dev";
@@ -78,15 +78,28 @@ Timer.set(2000, false, function() {
 
       log("Fetching watchdog.js branch:" + branch + " path:" + path);
 
-      fetchAndPut("watchdog.js", branch, path, 0, true, function() {
-        log("Deploy complete. Starting Script " + SCRIPT_ID + "...");
-        Shelly.call("Script.Start", { id: SCRIPT_ID }, function(res, err) {
-          if (err) {
-            halt("Failed to start Script " + SCRIPT_ID + " err:" + JSON.stringify(err));
-            return;
-          }
-          log("Watchdog running. Bootstrap complete.");
-        });
+      // Stop Script 2 if running, then overwrite it
+      Shelly.call("Script.GetStatus", { id: SCRIPT_ID }, function(sr, se) {
+        function doCreate() {
+          // Try to create — if already exists (-105) that's fine
+          Shelly.call("Script.Create", { name: "watchdog" }, function(res, err) {
+            fetchAndPut("watchdog.js", branch, path, 0, true, function() {
+              log("Deploy complete. Starting Script " + SCRIPT_ID + "...");
+              Shelly.call("Script.Start", { id: SCRIPT_ID }, function(res2, err2) {
+                if (err2) {
+                  halt("Failed to start Script " + SCRIPT_ID + " err:" + JSON.stringify(err2));
+                  return;
+                }
+                log("Watchdog running. Bootstrap complete.");
+              });
+            });
+          });
+        }
+        if (!se && sr && sr.running) {
+          Shelly.call("Script.Stop", { id: SCRIPT_ID }, function() { doCreate(); });
+        } else {
+          doCreate();
+        }
       });
     });
   });
