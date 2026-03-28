@@ -17,7 +17,8 @@ let cfg = {
   interval: 604800,
   next_check: 300,
   health_interval: 300,
-  rpc_delay: 200
+  rpc_delay: 200,
+  debug: true   // set wd.debug=0 in KVS to disable memory logging
 };
 
 let manifest    = null;
@@ -79,6 +80,12 @@ function log(level, msg) {
   }, null);
 }
 
+function logMem(label) {
+  if (!cfg.debug) return;
+  let sys = Shelly.getComponentStatus("sys");
+  log("MEM", label + " free:" + sys.ram_free + "/" + sys.ram_size);
+}
+
 // ================= GITHUB -- SMALL FILE =================
 function githubGetSmall(file, callback) {
   let assembled = "";
@@ -109,23 +116,27 @@ function githubFetchAndDeploy(file, scriptId, callback) {
   let firstPut    = true;
 
   function doPut(data, pos, left, putDone) {
-    if (pos >= data.length) { putDone(true); return; }
+    if (pos >= data.length) { data = null; putDone(true); return; }
     let piece  = data.slice(pos, pos + DEPLOY_CHUNK);
     let append = !firstPut;
     firstPut   = false;
+    logMem("before putcode");
     shellyCall("Script.PutCode", { id: scriptId, code: piece, append: append }, function(res, err) {
+      piece = null; res = null;
       if (err) {
         log("ERROR", "PutCode failed script:" + scriptId + " err:" + JSON.stringify(err));
         putDone(false);
         return;
       }
-      doPut(data, pos + piece.length, left, putDone);
+      logMem("after putcode");
+      doPut(data, pos + DEPLOY_CHUNK, left, putDone);
     });
   }
 
   function doFetch() {
     let url = CF_WORKER + "/?file=" + cfg.path + "/" + file +
               "&ref=" + cfg.branch + "&offset=" + fetchOffset + "&len=" + FETCH_CHUNK;
+    logMem("before fetch offset:" + fetchOffset);
     Shelly.call("HTTP.GET", { url: url }, function(res, err) {
       if (err || !res || res.code !== 200) {
         log("ERROR", "Fetch failed: " + file + " offset:" + fetchOffset);
@@ -135,8 +146,12 @@ function githubFetchAndDeploy(file, scriptId, callback) {
       let chunk = res.body;
       let left  = (res.headers && res.headers["X-Left"] !== undefined) ? (res.headers["X-Left"] * 1) : 0;
       fetchOffset += chunk.length;
+      res = null;  // release response object before putting
+      logMem("after fetch chunk:" + chunk.length + " left:" + left);
       doPut(chunk, 0, left, function(ok) {
+        chunk = null;
         if (!ok) { callback(false); return; }
+        logMem("after doPut");
         if (left > 0) { Timer.set(200, false, doFetch); } else { callback(true); }
       });
     });
@@ -587,6 +602,7 @@ function boot() {
         kvsGet("wd.next_check", function(next_check) {
           kvsGet("wd.health_interval", function(health_interval) {
             kvsGet("wd.rpc_delay", function(rpc_delay) {
+            kvsGet("wd.debug", function(debug) {
 
               if (!branch || !path) {
                 log("ERROR", "Missing wd.branch or wd.path -- halting");
@@ -599,6 +615,7 @@ function boot() {
               cfg.next_check      = next_check      ? (next_check * 1)      : 300;
               cfg.health_interval = health_interval ? (health_interval * 1) : 300;
               cfg.rpc_delay       = rpc_delay       ? (rpc_delay * 1)       : 200;
+              cfg.debug           = (debug === null) ? true : (debug !== "0");
 
               log("INFO", "Config loaded. branch:" + cfg.branch + " path:" + cfg.path);
 
@@ -615,6 +632,7 @@ function boot() {
                   scheduleHealth();
                 }
               });
+            });
             });
           });
         });
