@@ -1,14 +1,16 @@
 // version: 1.0.0
 // === Shelly Watchdog - GitHub Auto-Deploy & Script Monitor ===
+// Slot layout: 1=bootstrap 2=watchdog(permanent) 3+=app scripts
+// Self-update: creates temp slot, fetches new code, copies to slot 2, deletes self
 
 let MANIFEST_FILE = "manifest.json";
 let CF_WORKER     = "https://shelly-proxy.ash-b39.workers.dev";
-let FETCH_CHUNK   = 8192;   // bytes per HTTP fetch
-let DEPLOY_CHUNK  = 1024;   // bytes per Script.PutCode
-let WD_SLOT_A     = 2;
-let WD_SLOT_B     = 3;
+let FETCH_CHUNK   = 8192;
+let DEPLOY_CHUNK  = 1024;
+let WD_SLOT       = 2;   // permanent watchdog home
 
-// ================= STATE =================
+let selfId = Shelly.getCurrentScriptId();
+
 let cfg = {
   branch: "",
   path: "",
@@ -17,9 +19,6 @@ let cfg = {
   health_interval: 300,
   rpc_delay: 200
 };
-
-let selfId     = Shelly.getCurrentScriptId();
-let partnerId  = (selfId === WD_SLOT_A) ? WD_SLOT_B : WD_SLOT_A;
 
 let manifest    = null;
 let checkTimer  = null;
@@ -80,17 +79,14 @@ function log(level, msg) {
   }, null);
 }
 
-// ================= GITHUB -- SMALL FILE (manifest) =================
+// ================= GITHUB -- SMALL FILE =================
 function githubGetSmall(file, callback) {
   let assembled = "";
   let offset    = 0;
 
   function doFetch() {
     let url = CF_WORKER + "/?file=" + cfg.path + "/" + file +
-              "&ref=" + cfg.branch +
-              "&offset=" + offset +
-              "&len=" + FETCH_CHUNK;
-
+              "&ref=" + cfg.branch + "&offset=" + offset + "&len=" + FETCH_CHUNK;
     Shelly.call("HTTP.GET", { url: url }, function(res, err) {
       if (err || !res || res.code !== 200) {
         log("ERROR", "Fetch failed: " + file + " err:" + JSON.stringify(err));
@@ -100,11 +96,7 @@ function githubGetSmall(file, callback) {
       assembled += res.body;
       let left = (res.headers && res.headers["X-Left"] !== undefined) ? (res.headers["X-Left"] * 1) : 0;
       offset   += res.body.length;
-      if (left > 0) {
-        Timer.set(200, false, doFetch);
-      } else {
-        callback(assembled);
-      }
+      if (left > 0) { Timer.set(200, false, doFetch); } else { callback(assembled); }
     });
   }
 
@@ -112,16 +104,15 @@ function githubGetSmall(file, callback) {
 }
 
 // ================= GITHUB -- PIPELINED FETCH+DEPLOY =================
-function githubFetchAndDeploy(file, scriptId, isFirst, callback) {
+function githubFetchAndDeploy(file, scriptId, callback) {
   let fetchOffset = 0;
-  let firstPut    = isFirst;
+  let firstPut    = true;
 
   function doPut(data, pos, left, putDone) {
     if (pos >= data.length) { putDone(true); return; }
     let piece  = data.slice(pos, pos + DEPLOY_CHUNK);
     let append = !firstPut;
     firstPut   = false;
-
     shellyCall("Script.PutCode", { id: scriptId, code: piece, append: append }, function(res, err) {
       if (err) {
         log("ERROR", "PutCode failed script:" + scriptId + " err:" + JSON.stringify(err));
@@ -134,28 +125,19 @@ function githubFetchAndDeploy(file, scriptId, isFirst, callback) {
 
   function doFetch() {
     let url = CF_WORKER + "/?file=" + cfg.path + "/" + file +
-              "&ref=" + cfg.branch +
-              "&offset=" + fetchOffset +
-              "&len=" + FETCH_CHUNK;
-
+              "&ref=" + cfg.branch + "&offset=" + fetchOffset + "&len=" + FETCH_CHUNK;
     Shelly.call("HTTP.GET", { url: url }, function(res, err) {
       if (err || !res || res.code !== 200) {
-        log("ERROR", "Fetch failed: " + file + " offset:" + fetchOffset + " err:" + JSON.stringify(err));
+        log("ERROR", "Fetch failed: " + file + " offset:" + fetchOffset);
         callback(false);
         return;
       }
-
       let chunk = res.body;
       let left  = (res.headers && res.headers["X-Left"] !== undefined) ? (res.headers["X-Left"] * 1) : 0;
       fetchOffset += chunk.length;
-
       doPut(chunk, 0, left, function(ok) {
         if (!ok) { callback(false); return; }
-        if (left > 0) {
-          Timer.set(200, false, doFetch);
-        } else {
-          callback(true);
-        }
+        if (left > 0) { Timer.set(200, false, doFetch); } else { callback(true); }
       });
     });
   }
@@ -180,7 +162,7 @@ function getDeployedVersion(scriptId, callback) {
   });
 }
 
-// ================= CONFIG DIFF =================
+// ================= CONFIG PROVISIONING =================
 function configDiffers(desired, actual) {
   if (actual === null || actual === undefined) return true;
   let keys = Object.keys(desired);
@@ -195,29 +177,25 @@ function configDiffers(desired, actual) {
   return false;
 }
 
-// ================= PROVISIONING =================
 function provisionConfig(config, callback) {
   let methods = Object.keys(config);
   let i = 0;
   function next() {
     if (i >= methods.length) { callback(); return; }
-    let setMethod = methods[i];
-    let desired   = config[setMethod];
+    let setM    = methods[i];
+    let desired = config[setM];
     i++;
-    let getMethod = setMethod.replace("SetConfig", "GetConfig");
-    if (getMethod === setMethod) {
-      shellyCall(setMethod, desired, function(res, err) {
-        if (err) log("WARN", "Failed: " + setMethod);
-        next();
-      });
+    let getM = setM.replace("SetConfig", "GetConfig");
+    if (getM === setM) {
+      shellyCall(setM, desired, function(r, e) { if (e) log("WARN", "Failed: " + setM); next(); });
       return;
     }
-    shellyCall(getMethod, {}, function(res, err) {
+    shellyCall(getM, {}, function(res, err) {
       if (!err && res && !configDiffers(desired.config, res)) { next(); return; }
-      shellyCall(setMethod, desired, function(res2, err2) {
-        if (err2) log("WARN", "Failed: " + setMethod);
-        else if (res2 && res2.restart_required) log("WARN", setMethod + " REBOOT REQUIRED");
-        else log("INFO", setMethod + " applied OK");
+      shellyCall(setM, desired, function(r2, e2) {
+        if (e2) log("WARN", "Failed: " + setM);
+        else if (r2 && r2.restart_required) log("WARN", setM + " REBOOT REQUIRED");
+        else log("INFO", setM + " OK");
         next();
       });
     });
@@ -235,16 +213,16 @@ function provisionKvsConfig(kvsConfig, callback) {
     i++;
     shellyCall("KVS.Get", { key: key }, function(res, err) {
       if (!err && res) { next(); return; }
-      let getMethod = entry.method.replace("SetConfig", "GetConfig");
-      shellyCall(getMethod, {}, function(gres, gerr) {
-        if (!gerr && gres && !configDiffers(entry.config, gres)) {
+      let getM = entry.method.replace("SetConfig", "GetConfig");
+      shellyCall(getM, {}, function(gr, ge) {
+        if (!ge && gr && !configDiffers(entry.config, gr)) {
           shellyCall("KVS.Set", { key: key, value: "configured" }, function() { next(); });
           return;
         }
-        shellyCall(entry.method, { config: entry.config }, function(sres, serr) {
-          if (serr) log("WARN", "Failed kvsConfig: " + key);
-          else if (sres && sres.restart_required) log("WARN", key + " REBOOT REQUIRED");
-          else log("INFO", key + " applied OK");
+        shellyCall(entry.method, { config: entry.config }, function(sr, se) {
+          if (se) log("WARN", "Failed kvsConfig: " + key);
+          else if (sr && sr.restart_required) log("WARN", key + " REBOOT REQUIRED");
+          else log("INFO", key + " OK");
           shellyCall("KVS.Set", { key: key, value: "configured" }, function() { next(); });
         });
       });
@@ -258,9 +236,7 @@ function provisionKvsDefaults(defaults, callback) {
   let i = 0;
   function next() {
     if (i >= keys.length) { callback(); return; }
-    let key = keys[i];
-    let val = defaults[key];
-    i++;
+    let key = keys[i]; let val = defaults[key]; i++;
     shellyCall("KVS.Get", { key: key }, function(res, err) {
       if (!err && res) { next(); return; }
       shellyCall("KVS.Set", { key: key, value: String(val) }, function(r2, e2) {
@@ -277,21 +253,21 @@ function provisionComponents(components, callback) {
   function next() {
     if (i >= components.length) { callback(); return; }
     let comp = components[i]; i++;
-    let getMethod = (comp.type === "text") ? "Text.GetConfig" : "Number.GetConfig";
-    shellyCall(getMethod, { id: comp.id }, function(res, err) {
+    let getM = (comp.type === "text") ? "Text.GetConfig" : "Number.GetConfig";
+    shellyCall(getM, { id: comp.id }, function(res, err) {
       if (!err && res && res.name === comp.name) { next(); return; }
       if (!err && res) {
-        let setMethod = (comp.type === "text") ? "Text.SetConfig" : "Number.SetConfig";
-        shellyCall(setMethod, { id: comp.id, config: { name: comp.name } }, function() {
+        let setM = (comp.type === "text") ? "Text.SetConfig" : "Number.SetConfig";
+        shellyCall(setM, { id: comp.id, config: { name: comp.name } }, function() {
           log("INFO", "Renamed " + comp.type + ":" + comp.id + " to " + comp.name);
           next();
         });
         return;
       }
-      let addMethod = (comp.type === "text") ? "Text.Add" : "Number.Add";
-      shellyCall(addMethod, { id: comp.id, config: { name: comp.name } }, function(r2, e2) {
+      let addM = (comp.type === "text") ? "Text.Add" : "Number.Add";
+      shellyCall(addM, { id: comp.id, config: { name: comp.name } }, function(r2, e2) {
         if (e2) log("ERROR", "Failed to create " + comp.type + ":" + comp.id);
-        else log("INFO", "Created " + comp.type + ":" + comp.id);
+        else log("INFO", "Created " + comp.type + ":" + comp.id + " name:" + comp.name);
         next();
       });
     });
@@ -299,68 +275,57 @@ function provisionComponents(components, callback) {
   next();
 }
 
-// ================= WATCHDOG SELF-UPDATE =================
-function selfUpdate(remoteVersion, callback) {
-  log("INFO", "Self-update to " + remoteVersion + " -- deploying to slot " + partnerId);
-
-  // Stop partner if running
-  shellyCall("Script.GetStatus", { id: partnerId }, function(res, err) {
-    if (!err && res && res.running) {
-      shellyCall("Script.Stop", { id: partnerId }, function() {
-        writeToPartner(remoteVersion, callback);
-      });
-    } else {
-      writeToPartner(remoteVersion, callback);
-    }
-  });
-}
-
-function writeToPartner(remoteVersion, callback) {
-  kvsSet("s." + partnerId + ".ok", "0", function() {
-    githubFetchAndDeploy("watchdog.js", partnerId, true, function(ok) {
-      if (!ok) {
-        log("ERROR", "Self-update deploy failed");
-        callback(false);
-        return;
-      }
-      kvsSet("s." + partnerId + ".ok", "1", function() {
-        log("INFO", "Self-update written to slot " + partnerId + " -- starting");
-        shellyCall("Script.Start", { id: partnerId }, function(res, err) {
-          if (err) {
-            log("ERROR", "Failed to start slot " + partnerId);
-            callback(false);
-          } else {
-            // New watchdog takes over -- we exit
-            callback(true);
-          }
-        });
-      });
-    });
-  });
-}
-
-// On boot -- check if partner is older and delete it
-function cleanupPartner(callback) {
-  shellyCall("Script.GetCode", { id: partnerId, offset: 0, len: 20 }, function(res, err) {
-    if (err || !res) {
-      // Partner doesn't exist -- nothing to clean up
-      callback();
-      return;
-    }
-    let partnerVersion = extractVersion(res.data);
-    getDeployedVersion(selfId, function(myVersion) {
-      if (partnerVersion && myVersion && partnerVersion < myVersion) {
-        log("INFO", "Deleting older partner slot " + partnerId + " v" + partnerVersion);
-        shellyCall("Script.Stop",   { id: partnerId }, function() {
-          shellyCall("Script.Delete", { id: partnerId }, function() {
-            callback();
+// ================= SELF UPDATE =================
+// If running in permanent slot -- create temp slot, deploy new code, start it
+// If running in temp slot -- redeploy to permanent slot, start it, delete self
+function handleSelfUpdate(remoteVersion) {
+  if (selfId === WD_SLOT) {
+    // Running in permanent slot -- spawn temp updater
+    log("INFO", "New watchdog v" + remoteVersion + " -- creating temp slot");
+    shellyCall("Script.Create", { name: "watchdog_update" }, function(res, err) {
+      if (err || !res) { log("ERROR", "Failed to create temp slot"); return; }
+      let tempId = res.id;
+      log("INFO", "Deploying v" + remoteVersion + " to temp slot " + tempId);
+      githubFetchAndDeploy("watchdog.js", tempId, function(ok) {
+        if (!ok) {
+          log("ERROR", "Failed to deploy to temp slot");
+          shellyCall("Script.Delete", { id: tempId }, null);
+          return;
+        }
+        kvsSet("s." + tempId + ".ok", "1", function() {
+          shellyCall("Script.Start", { id: tempId }, function(r2, e2) {
+            if (e2) {
+              log("ERROR", "Failed to start temp slot " + tempId);
+              shellyCall("Script.Delete", { id: tempId }, null);
+            } else {
+              log("INFO", "Temp slot " + tempId + " started -- handing over");
+            }
           });
         });
-      } else {
-        callback();
-      }
+      });
     });
-  });
+  } else {
+    // Running in temp slot -- redeploy to permanent slot then clean up
+    log("INFO", "Temp slot " + selfId + " -- redeploying to permanent slot " + WD_SLOT);
+    shellyCall("Script.Stop", { id: WD_SLOT }, function() {
+      githubFetchAndDeploy("watchdog.js", WD_SLOT, function(ok) {
+        if (!ok) {
+          log("ERROR", "Failed to redeploy to slot " + WD_SLOT);
+          return;
+        }
+        shellyCall("Script.Start", { id: WD_SLOT }, function(r2, e2) {
+          if (e2) {
+            log("ERROR", "Failed to start slot " + WD_SLOT);
+            return;
+          }
+          log("INFO", "Slot " + WD_SLOT + " updated -- deleting temp slot " + selfId);
+          shellyCall("Script.Stop",   { id: selfId }, function() {
+            shellyCall("Script.Delete", { id: selfId }, null);
+          });
+        });
+      });
+    });
+  }
 }
 
 // ================= SCRIPT DEPLOY =================
@@ -369,12 +334,8 @@ function deployScript(script, callback) {
     shellyCall("Script.GetStatus", { id: script.id }, function(res, err) {
       let running = (!err && res && res.running);
       function doWrite() {
-        githubFetchAndDeploy(script.file, script.id, true, function(ok) {
-          if (!ok) {
-            log("ERROR", "Deploy failed: " + script.name);
-            callback(false);
-            return;
-          }
+        githubFetchAndDeploy(script.file, script.id, function(ok) {
+          if (!ok) { log("ERROR", "Deploy failed: " + script.name); callback(false); return; }
           kvsSet("s." + script.id + ".ok", "1", function() {
             log("INFO", "Deployed: " + script.name);
             if (!script.autostart) { callback(true); return; }
@@ -416,7 +377,7 @@ function healthCheck(scripts, callback) {
   function next() {
     if (i >= scripts.length) { callback(forceRedeploy); return; }
     let script = scripts[i]; i++;
-    if (!script.autostart || script.id === selfId || script.id === partnerId) { next(); return; }
+    if (!script.autostart || script.id === WD_SLOT) { next(); return; }
     shellyCall("Script.GetStatus", { id: script.id }, function(res, err) {
       if (!err && res && res.running) {
         kvsSet("s." + script.id + ".fails", "0", null);
@@ -427,7 +388,7 @@ function healthCheck(scripts, callback) {
         let fails = val ? (val * 1) : 0;
         fails++;
         if (fails >= 3) {
-          log("WARN", "Script " + script.id + " failed 3 times -- forcing redeploy");
+          log("WARN", "Script " + script.id + " failed 3x -- forcing redeploy");
           kvsSet("s." + script.id + ".ok", "0", null);
           kvsSet("s." + script.id + ".fails", "0", null);
           forceRedeploy = true;
@@ -464,13 +425,12 @@ function checkAndDeployScript(scripts, i, forcedFlags, anyDeployed, callback) {
   let script = scripts[i];
   let forced = forcedFlags[i];
 
-  // Skip watchdog slots -- handled separately via selfUpdate
-  if (script.id === selfId || script.id === partnerId) {
+  // Skip watchdog slot -- handled by checkWatchdogUpdate
+  if (script.id === WD_SLOT) {
     checkAndDeployScript(scripts, i + 1, forcedFlags, anyDeployed, callback);
     return;
   }
 
-  // Fetch only first 20 bytes for version check -- avoids full file load
   let versionUrl = CF_WORKER + "/?file=" + cfg.path + "/" + script.file +
                    "&ref=" + cfg.branch + "&offset=0&len=20";
 
@@ -495,7 +455,6 @@ function checkAndDeployScript(scripts, i, forcedFlags, anyDeployed, callback) {
 }
 
 function checkWatchdogUpdate(callback) {
-  // Fetch just the first chunk to get version line
   let url = CF_WORKER + "/?file=" + cfg.path + "/watchdog.js" +
             "&ref=" + cfg.branch + "&offset=0&len=20";
   Shelly.call("HTTP.GET", { url: url }, function(res, err) {
@@ -505,17 +464,11 @@ function checkWatchdogUpdate(callback) {
       return;
     }
     let remoteVersion = extractVersion(res.body);
-    getDeployedVersion(selfId, function(localVersion) {
+    getDeployedVersion(WD_SLOT, function(localVersion) {
       log("INFO", "Watchdog local:" + localVersion + " remote:" + remoteVersion);
       if (remoteVersion && localVersion !== remoteVersion) {
-        selfUpdate(remoteVersion, function(ok) {
-          if (ok) {
-            // New watchdog is running -- stop here
-            callback("updated");
-          } else {
-            callback(false);
-          }
-        });
+        handleSelfUpdate(remoteVersion);
+        callback("updated");
       } else {
         callback(false);
       }
@@ -540,16 +493,11 @@ function runVersionCycle() {
   if (checkTimer) { Timer.clear(checkTimer); checkTimer = null; }
   log("INFO", "Version cycle starting");
 
-  // Check watchdog update first
   checkWatchdogUpdate(function(result) {
-    if (result === "updated") return; // new watchdog takes over
+    if (result === "updated") return;
 
     githubGetSmall(MANIFEST_FILE, function(body) {
-      if (!body) {
-        log("ERROR", "Failed to fetch manifest -- retry in 300s");
-        scheduleNext(300);
-        return;
-      }
+      if (!body) { log("ERROR", "Failed to fetch manifest"); scheduleNext(300); return; }
       try { manifest = JSON.parse(body); } catch(e) {
         log("ERROR", "Failed to parse manifest");
         scheduleNext(300);
@@ -561,7 +509,7 @@ function runVersionCycle() {
             provisionKvsDefaults(manifest.kvsDefaults || {}, function() {
               checkForcedFlags(manifest.scripts, function(flags) {
                 checkAndDeployScript(manifest.scripts, 0, flags, false, function(anyDeployed) {
-                  if (anyDeployed || result) {
+                  if (anyDeployed) {
                     cfg.next_check = 300;
                     kvsSet("wd.next_check", "300", null);
                     scheduleNext(300);
@@ -594,8 +542,24 @@ function scheduleNext(seconds) {
 
 // ================= BOOT =================
 function boot() {
-  log("INFO", "Watchdog booting. selfId:" + selfId + " partnerId:" + partnerId);
+  log("INFO", "Watchdog booting. selfId:" + selfId);
 
+  // If running in temp slot -- immediately handle self-update
+  if (selfId !== WD_SLOT) {
+    log("INFO", "Running in temp slot " + selfId + " -- redeploying to slot " + WD_SLOT);
+    // Load config first so CF Worker URL etc are available
+    kvsGet("wd.branch", function(branch) {
+      kvsGet("wd.path", function(path) {
+        if (!branch || !path) { log("ERROR", "Missing wd.branch or wd.path"); return; }
+        cfg.branch = branch;
+        cfg.path   = path;
+        handleSelfUpdate(null);
+      });
+    });
+    return;
+  }
+
+  // Running in permanent slot -- normal boot
   kvsGet("wd.branch", function(branch) {
     kvsGet("wd.path", function(path) {
       kvsGet("wd.interval", function(interval) {
@@ -616,12 +580,8 @@ function boot() {
               cfg.rpc_delay       = rpc_delay       ? (rpc_delay * 1)       : 200;
 
               log("INFO", "Config loaded. branch:" + cfg.branch + " path:" + cfg.path);
-
-              // Clean up older partner slot if present
-              cleanupPartner(function() {
-                runVersionCycle();
-                scheduleHealth();
-              });
+              runVersionCycle();
+              scheduleHealth();
             });
           });
         });
