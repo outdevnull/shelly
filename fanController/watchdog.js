@@ -1,9 +1,9 @@
-// version: 1.1.7
+// version: 1.1.8
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
 let CFW  = "https://shelly-proxy.ash-b39.workers.dev";
-let FCHK = 4096;
+let FCHK = 2048;
 let PCHK = 1024;
 let WDSL = 2;
 let SLFI = Shelly.getCurrentScriptId();
