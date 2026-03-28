@@ -8,7 +8,7 @@
   },
   "kvsConfig": {
     "mqtt.enable":       { "method": "Mqtt.SetConfig", "config": { "enable": true } },
-    "mqtt.server":       { "method": "Mqtt.SetConfig", "config": { "server": "10.0.140.225:1883" } },
+    "mqtt.server":       { "method": "Mqtt.SetConfig", "config": { "server": "192.168.x.x:1883" } },
     "mqtt.client_id":    { "method": "Mqtt.SetConfig", "config": { "client_id": "bathroom-fan" } },
     "mqtt.topic_prefix": { "method": "Mqtt.SetConfig", "config": { "topic_prefix": "shelly/bathroom-fan" } },
     "device.name":       { "method": "Sys.SetConfig",  "config": { "device": { "name": "Bathroom Fan Controller" } } },
@@ -49,7 +49,7 @@
       "autostart": false
     },
     {
-      "id": 4,
+      "id": 3,
       "name": "bathroom-fan",
       "file": "fancontroller.js",
       "version": "1.0.0",
