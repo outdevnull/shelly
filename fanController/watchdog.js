@@ -601,8 +601,20 @@ function boot() {
               cfg.rpc_delay       = rpc_delay       ? (rpc_delay * 1)       : 200;
 
               log("INFO", "Config loaded. branch:" + cfg.branch + " path:" + cfg.path);
-              runVersionCycle();
-              scheduleHealth();
+
+              // Stop bootstrapper (slot 1) to free RAM -- it's not needed while watchdog runs
+              Shelly.call("Script.GetStatus", { id: 1 }, function(sr, se) {
+                if (!se && sr && sr.running) {
+                  Shelly.call("Script.Stop", { id: 1 }, function() {
+                    log("INFO", "Bootstrapper stopped");
+                    runVersionCycle();
+                    scheduleHealth();
+                  });
+                } else {
+                  runVersionCycle();
+                  scheduleHealth();
+                }
+              });
             });
           });
         });
