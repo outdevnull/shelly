@@ -4,7 +4,7 @@
 // Overwrites itself in the process — runs once and ceases to exist.
 
 let WATCHDOG_FILE = "watchdog.js";
-let SCRIPT_ID     = 1;
+let SCRIPT_ID     = 99;    // bootstrapper writes watchdog into slot 99
 let CHUNK_SIZE    = 4096;  // bytes per download chunk — safely under Shelly's ~16KB limit
 let DEPLOY_CHUNK  = 1024;  // bytes per Script.PutCode chunk
 let CF_WORKER     = "https://shelly-proxy.ash-b39.workers.dev";
