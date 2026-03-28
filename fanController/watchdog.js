@@ -1,4 +1,4 @@
-// version: 1.1.3
+// version: 1.1.4
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
@@ -571,7 +571,7 @@ function snxt(s) {
 // ================= WAIT KVS RESTORE =================
 // Find kvs_restore by name, then poll until it stops running.
 // There is a window between device boot and kvs_restore completing where KVS
-// may be empty — this function bridges that window before normal boot proceeds.
+// may be empty -- this function bridges that window before normal boot proceeds.
 function wkr(cb) {
   fksl(function(sid) {
     if (sid === null) { cb(); return; } // not yet created, nothing to wait for
