@@ -1,4 +1,4 @@
-// version: 1.0.8
+// version: 1.0.9
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
@@ -291,7 +291,11 @@ function cads(sc, i, ff, ad, cb) {
       let rv = exvr(r.body); r = null;
       gdvr(s.id, function(lv) {
         lg("INFO", s.name + " l:" + lv + " r:" + rv);
-        if (!fc && lv === rv) { cads(sc, i + 1, ff, ad, cb); return; }
+        if (!fc && lv === rv) {
+          // Version matches -- just ensure enable is set correctly
+          scll("Script.SetConfig", { id: s.id, config: { enable: s.autostart } }, null);
+          cads(sc, i + 1, ff, ad, cb); return;
+        }
         dpsc(s, function(ok) { cads(sc, i + 1, ff, true, cb); });
       });
     });
