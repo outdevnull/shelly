@@ -1,4 +1,4 @@
-// version: 1.0.1
+// version: 1.0.2
 // === Bathroom Fan - Forensic Logic with Startup & Trace Logging ===
 // Note: Hard safety cutoff is handled by Shelly's built-in auto-off timer (1hr).
 
@@ -139,9 +139,8 @@ function loadSettings(callback) {
 
     Shelly.call("KVS.Get", { key: key }, function(res, err) {
       if (err || !res) {
-        Shelly.call("KVS.Set", { key: key, value: String(KVS_DEFAULTS[key]) }, function() {
-          next();
-        });
+        // key missing -- S already has the in-memory default, don't write to KVS
+        next();
         return;
       }
       let val = res.value;
