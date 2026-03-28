@@ -1,89 +1,66 @@
 // version: 1.0.0
 // === Shelly Watchdog Bootstrapper ===
-// One-shot: fetches watchdog.js from GitHub via CF Worker in chunks, deploys to Script 1, starts it.
-// Overwrites itself in the process — runs once and ceases to exist.
+// Fetches watchdog.js in chunks, immediately PutCode each chunk — no full file in memory.
+// Writes to Script 99, starts it, then exits.
 
-let WATCHDOG_FILE = "watchdog.js";
-let SCRIPT_ID     = 99;    // bootstrapper writes watchdog into slot 99
-let CHUNK_SIZE    = 4096;  // bytes per download chunk — safely under Shelly's ~16KB limit
-let DEPLOY_CHUNK  = 1024;  // bytes per Script.PutCode chunk
-let CF_WORKER     = "https://shelly-proxy.ash-b39.workers.dev";
+let SCRIPT_ID    = 99;
+let FETCH_CHUNK  = 4096;
+let DEPLOY_CHUNK = 1024;
+let CF_WORKER    = "https://shelly-proxy.ash-b39.workers.dev";
 
-function log(msg) {
-  print("[BOOTSTRAP] " + msg);
-  Shelly.call("MQTT.Publish", { topic: "shelly/bootstrap/INFO",  message: msg, qos: 0, retain: false }, null);
-}
+function log(msg) { print("[BOOTSTRAP] " + msg); }
+function halt(msg) { print("[BOOTSTRAP ERROR] " + msg); }
 
-function halt(msg) {
-  print("[BOOTSTRAP ERROR] " + msg);
-  Shelly.call("MQTT.Publish", { topic: "shelly/bootstrap/ERROR", message: msg, qos: 0, retain: false }, null);
-}
-
-// ================= DOWNLOAD IN CHUNKS =================
-function downloadChunked(branch, path, offset, accumulated, callback) {
-  let url = CF_WORKER + "/?file=" + path + "/" + WATCHDOG_FILE +
+// Fetch one HTTP chunk, then immediately PutCode it in DEPLOY_CHUNK pieces
+function fetchAndPut(file, branch, path, fetchOffset, isFirstPut, callback) {
+  let url = CF_WORKER + "/?file=" + path + "/" + file +
             "&ref=" + branch +
-            "&offset=" + offset +
-            "&len=" + CHUNK_SIZE;
+            "&offset=" + fetchOffset +
+            "&len=" + FETCH_CHUNK;
 
   Shelly.call("HTTP.GET", { url: url }, function(res, err) {
     if (err || !res || res.code !== 200) {
-      halt("Download failed at offset " + offset + " err:" + JSON.stringify(err));
+      halt("Fetch failed offset:" + fetchOffset + " err:" + JSON.stringify(err));
       return;
     }
 
-    accumulated = accumulated + res.body;
+    let data = res.body;
+    let left = (res.headers && res.headers["X-Left"] !== undefined) ? (res.headers["X-Left"] * 1) : 0;
+    let newFetchOffset = fetchOffset + data.length;
 
-    // Parse X-Left from response headers
-    let left = 0;
-    if (res.headers && res.headers["X-Left"] !== undefined) {
-      left = res.headers["X-Left"] * 1;
-    }
+    log("Chunk " + fetchOffset + "-" + newFetchOffset + " left:" + left);
 
-    log("Downloaded " + accumulated.length + " bytes, " + left + " remaining...");
-
-    if (left > 0) {
-      // More chunks to fetch
-      Timer.set(200, false, function() {
-        downloadChunked(branch, path, offset + CHUNK_SIZE, accumulated, callback);
-      });
-    } else {
-      // All chunks received
-      callback(accumulated);
-    }
+    // PutCode this chunk in DEPLOY_CHUNK pieces
+    putPieces(data, 0, isFirstPut, function(ok) {
+      if (!ok) return;
+      if (left > 0) {
+        Timer.set(300, false, function() {
+          fetchAndPut(file, branch, path, newFetchOffset, false, callback);
+        });
+      } else {
+        callback();
+      }
+    });
   });
 }
 
-// ================= DEPLOY IN CHUNKS =================
-function deployChunked(content, offset) {
-  let chunk   = content.slice(offset, offset + DEPLOY_CHUNK);
-  let isFirst = (offset === 0);
-  offset += chunk.length;
+function putPieces(data, pos, isFirst, callback) {
+  if (pos >= data.length) { callback(true); return; }
+  let piece = data.slice(pos, pos + DEPLOY_CHUNK);
 
   Shelly.call("Script.PutCode", {
     id:     SCRIPT_ID,
-    code:   chunk,
+    code:   piece,
     append: !isFirst
   }, function(res, err) {
     if (err) {
-      halt("PutCode failed at offset " + (offset - chunk.length) + " err:" + JSON.stringify(err));
+      halt("PutCode failed pos:" + pos + " err:" + JSON.stringify(err));
+      callback(false);
       return;
     }
-
-    if (offset < content.length) {
-      Timer.set(200, false, function() {
-        deployChunked(content, offset);
-      });
-    } else {
-      log("Deploy complete. Starting watchdog...");
-      Shelly.call("Script.Start", { id: SCRIPT_ID }, function(res, err) {
-        if (err) {
-          halt("Failed to start watchdog — err:" + JSON.stringify(err));
-          return;
-        }
-        log("Watchdog running. Bootstrap complete.");
-      });
-    }
+    Timer.set(200, false, function() {
+      putPieces(data, pos + piece.length, false, callback);
+    });
   });
 }
 
@@ -99,10 +76,17 @@ Timer.set(2000, false, function() {
       let branch = r1.value;
       let path   = r2.value;
 
-      log("Fetching " + WATCHDOG_FILE + " from " + CF_WORKER + " branch:" + branch + " path:" + path);
-      downloadChunked(branch, path, 0, "", function(content) {
-        log("Full file received (" + content.length + " bytes). Deploying to Script " + SCRIPT_ID + "...");
-        deployChunked(content, 0);
+      log("Fetching watchdog.js branch:" + branch + " path:" + path);
+
+      fetchAndPut("watchdog.js", branch, path, 0, true, function() {
+        log("Deploy complete. Starting Script " + SCRIPT_ID + "...");
+        Shelly.call("Script.Start", { id: SCRIPT_ID }, function(res, err) {
+          if (err) {
+            halt("Failed to start Script " + SCRIPT_ID + " err:" + JSON.stringify(err));
+            return;
+          }
+          log("Watchdog running. Bootstrap complete.");
+        });
       });
     });
   });
