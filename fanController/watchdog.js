@@ -5,8 +5,8 @@ let MANIFEST_FILE = "manifest.json";
 let CF_WORKER     = "https://shelly-proxy.ash-b39.workers.dev";
 let FETCH_CHUNK   = 8192;   // bytes per HTTP fetch
 let DEPLOY_CHUNK  = 1024;   // bytes per Script.PutCode
-let WD_SLOT_A     = 98;
-let WD_SLOT_B     = 99;
+let WD_SLOT_A     = 2;
+let WD_SLOT_B     = 3;
 
 // ================= STATE =================
 let cfg = {
