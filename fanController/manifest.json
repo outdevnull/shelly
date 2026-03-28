@@ -51,7 +51,7 @@
     {
       "id": 4,
       "name": "bathroom-fan",
-      "file": "fan_controller.js",
+      "file": "fancontroller.js",
       "version": "1.0.0",
       "autostart": true
     }
