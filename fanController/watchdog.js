@@ -475,14 +475,17 @@ function checkAndDeployScript(scripts, i, forcedFlags, anyDeployed, callback) {
     return;
   }
 
-  // Only fetch version line first — avoid full file fetch if not needed
-  githubGetSmall(script.file, function(content) {
-    if (!content) {
-      log("ERROR", "Failed to fetch " + script.file + " — skipping");
+  // Fetch only first 20 bytes for version check — avoids full file load
+  let versionUrl = CF_WORKER + "/?file=" + cfg.path + "/" + script.file +
+                   "&ref=" + cfg.branch + "&offset=0&len=20";
+
+  Shelly.call("HTTP.GET", { url: versionUrl }, function(res, err) {
+    if (err || !res || res.code !== 200) {
+      log("ERROR", "Version check failed: " + script.file + " — skipping");
       checkAndDeployScript(scripts, i + 1, forcedFlags, anyDeployed, callback);
       return;
     }
-    let remoteVersion = extractVersion(content);
+    let remoteVersion = extractVersion(res.body);
     getDeployedVersion(script.id, function(localVersion) {
       log("INFO", script.name + " local:" + localVersion + " remote:" + remoteVersion);
       if (!forced && localVersion === remoteVersion) {
