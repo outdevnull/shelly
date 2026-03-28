@@ -1,4 +1,4 @@
-// version: 1.0.0
+// version: 1.0.1
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
@@ -57,11 +57,6 @@ function lg(lv, ms) {
   if (MQTT.isConnected()) {
     scll("MQTT.Publish", { topic: "shelly/watchdog/" + lv, message: ms, qos: 0, retain: false }, null);
   }
-}
-
-function lmem(lb) {
-  let s = Shelly.getComponentStatus("sys");
-  lg("MEM", lb + " f:" + s.ram_free + "/" + s.ram_size);
 }
 
 // ================= FETCH SMALL =================
