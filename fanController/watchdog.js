@@ -1,4 +1,4 @@
-// version: 1.0.1
+// version: 1.0.2
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
@@ -141,15 +141,18 @@ function gdvr(sid, cb) {
 function hsup(rv) {
   if (SLFI === WDSL) {
     lg("INFO", "new v" + rv + " spawning temp");
-    scll("Script.Create", { name: "wdup" }, function(r, e) {
-      if (e || !r) { lg("ERR", "create temp"); return; }
-      let tid = r.id;
-      gfad("watchdog.js", tid, function(ok) {
-        if (!ok) { scll("Script.Delete", { id: tid }, null); return; }
-        kset("s." + tid + ".ok", "1", function() {
-          scll("Script.Start", { id: tid }, function(r2, e2) {
-            if (e2) { scll("Script.Delete", { id: tid }, null); }
-            else { lg("INFO", "temp " + tid + " started"); }
+    // Stop other scripts first to free mJS heap for deploy
+    scll("Script.Stop", { id: 3 }, function() {
+      scll("Script.Create", { name: "wdup" }, function(r, e) {
+        if (e || !r) { lg("ERR", "create temp"); return; }
+        let tid = r.id;
+        gfad("watchdog.js", tid, function(ok) {
+          if (!ok) { scll("Script.Delete", { id: tid }, null); return; }
+          kset("s." + tid + ".ok", "1", function() {
+            scll("Script.Start", { id: tid }, function(r2, e2) {
+              if (e2) { scll("Script.Delete", { id: tid }, null); }
+              else { lg("INFO", "temp " + tid + " started"); }
+            });
           });
         });
       });
@@ -161,8 +164,12 @@ function hsup(rv) {
         if (!ok) { lg("ERR", "redeploy fail"); return; }
         scll("Script.Start", { id: WDSL }, function(r2, e2) {
           if (e2) { lg("ERR", "start slot " + WDSL); return; }
-          scll("Script.Stop",   { id: SLFI }, function() {
-            scll("Script.Delete", { id: SLFI }, null);
+          // Restart fan controller that was stopped for heap space
+          scll("Script.Start", { id: 3 }, function() {
+            lg("INFO", "slot " + WDSL + " updated -- deleting temp " + SLFI);
+            scll("Script.Stop",   { id: SLFI }, function() {
+              scll("Script.Delete", { id: SLFI }, null);
+            });
           });
         });
       });
