@@ -10,8 +10,8 @@ let CF_WORKER    = "https://shelly-proxy.ash-b39.workers.dev";
 
 // Hardcoded KVS defaults for this device -- written if missing
 let KVS_REQUIRED = {
-  "wd.branch": "main",
-  "wd.path":   "fanController"
+  "wd.br": "main",
+  "wd.pt":   "fanController"
 };
 
 function log(msg) { print("[BOOTSTRAP] " + msg); }
@@ -92,10 +92,10 @@ Timer.set(2000, false, function() {
   }
 
   function doBootstrap() {
-  Shelly.call("KVS.Get", { key: "wd.branch" }, function(r1, e1) {
-    if (e1 || !r1) { halt("Missing wd.branch in KVS"); return; }
-    Shelly.call("KVS.Get", { key: "wd.path" }, function(r2, e2) {
-      if (e2 || !r2) { halt("Missing wd.path in KVS"); return; }
+  Shelly.call("KVS.Get", { key: "wd.br" }, function(r1, e1) {
+    if (e1 || !r1) { halt("Missing wd.br in KVS"); return; }
+    Shelly.call("KVS.Get", { key: "wd.pt" }, function(r2, e2) {
+      if (e2 || !r2) { halt("Missing wd.pt in KVS"); return; }
 
       let branch = r1.value;
       let path   = r2.value;
