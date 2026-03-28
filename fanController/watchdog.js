@@ -235,11 +235,18 @@ function provisionKvsDefaults(defaults, callback) {
   let keys = Object.keys(defaults);
   let i = 0;
   function next() {
-    if (i >= keys.length) { callback(); return; }
+    if (i >= keys.length) {
+      // Mark provisioning complete
+      Shelly.call("KVS.Set", { key: "wd.provisioned", value: "1" }, function() {
+        callback();
+      });
+      return;
+    }
     let key = keys[i]; let val = defaults[key]; i++;
-    shellyCall("KVS.Get", { key: key }, function(res, err) {
+    // Use direct Shelly.call -- not the RPC queue -- to avoid memory buildup
+    Shelly.call("KVS.Get", { key: key }, function(res, err) {
       if (!err && res) { next(); return; }
-      shellyCall("KVS.Set", { key: key, value: String(val) }, function(r2, e2) {
+      Shelly.call("KVS.Set", { key: key, value: String(val) }, function(r2, e2) {
         if (!e2) log("INFO", "KVS default: " + key + "=" + val);
         next();
       });
@@ -503,28 +510,42 @@ function runVersionCycle() {
         scheduleNext(300);
         return;
       }
-      provisionComponents(manifest.components, function() {
-        provisionConfig(manifest.config || {}, function() {
-          provisionKvsConfig(manifest.kvsConfig || {}, function() {
-            provisionKvsDefaults(manifest.kvsDefaults || {}, function() {
-              checkForcedFlags(manifest.scripts, function(flags) {
-                checkAndDeployScript(manifest.scripts, 0, flags, false, function(anyDeployed) {
-                  if (anyDeployed) {
-                    cfg.next_check = 300;
-                    kvsSet("wd.next_check", "300", null);
-                    scheduleNext(300);
-                  } else {
-                    let n = cfg.next_check * 2;
-                    if (n > cfg.interval) n = cfg.interval;
-                    cfg.next_check = n;
-                    kvsSet("wd.next_check", String(n), null);
-                    scheduleNext(n);
-                  }
+
+      function doVersionCheck() {
+        checkForcedFlags(manifest.scripts, function(flags) {
+          checkAndDeployScript(manifest.scripts, 0, flags, false, function(anyDeployed) {
+            if (anyDeployed) {
+              cfg.next_check = 300;
+              kvsSet("wd.next_check", "300", null);
+              scheduleNext(300);
+            } else {
+              let n = cfg.next_check * 2;
+              if (n > cfg.interval) n = cfg.interval;
+              cfg.next_check = n;
+              kvsSet("wd.next_check", String(n), null);
+              scheduleNext(n);
+            }
+          });
+        });
+      }
+
+      // Only provision on first boot or after KVS wipe
+      Shelly.call("KVS.Get", { key: "wd.provisioned" }, function(res, err) {
+        if (!err && res && res.value === "1") {
+          log("INFO", "Already provisioned -- skipping");
+          doVersionCheck();
+        } else {
+          log("INFO", "Provisioning device...");
+          provisionComponents(manifest.components, function() {
+            provisionConfig(manifest.config || {}, function() {
+              provisionKvsDefaults(manifest.kvsDefaults || {}, function() {
+                provisionKvsConfig(manifest.kvsConfig || {}, function() {
+                  doVersionCheck();
                 });
               });
             });
           });
-        });
+        }
       });
     });
   });
