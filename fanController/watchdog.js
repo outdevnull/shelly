@@ -1,4 +1,4 @@
-// version: 1.1.4
+// version: 1.1.5
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
@@ -625,18 +625,21 @@ function boot() {
           }
         });
       }
-      if (!br) {
-        lg("WARN", "KVS empty, wait kvs_restore");
-        wkr(function() {
+      // Always wait for kvs_restore to finish before proceeding.
+      // On normal reboot wd.br is present but kvs_restore still runs
+      // from autostart -- concurrent RPC load with provisioning causes OOM.
+      wkr(function() {
+        if (!br) {
+          lg("WARN", "KVS empty after restore");
           // Re-read wd.rd in case it was restored with a non-default value
           kget("wd.rd", function(rd2) {
             rDly = rd2 ? (rd2 * 1) : 200;
             proceed();
           });
-        });
-      } else {
-        proceed();
-      }
+        } else {
+          proceed();
+        }
+      });
     });
   });
 }
