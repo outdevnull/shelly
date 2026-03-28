@@ -1,9 +1,8 @@
-// version: 1.0.0
+// version: 1.0.1
 // === Bathroom Fan - Forensic Logic with Startup & Trace Logging ===
 // Note: Hard safety cutoff is handled by Shelly's built-in auto-off timer (1hr).
 
 // ================= HARDCODED CONFIG =================
-// Device wiring, physics constants, internal tuning — not user facing
 let CONFIG = {
   current_humidity_num_id:    200,
   current_temperature_num_id: 201,
@@ -18,7 +17,6 @@ let CONFIG = {
 };
 
 // ================= KVS DEFAULTS =================
-// Written to KVS only if key is missing — user can override via KVS
 let KVS_DEFAULTS = {
   "fan.room_name":                  "Bathroom",
   "fan.shower_spike":               0.60,
@@ -37,7 +35,6 @@ let KVS_DEFAULTS = {
 };
 
 // ================= LIVE SETTINGS =================
-// Populated from KVS at boot — all runtime logic reads from here
 let S = {};
 
 // ================= STATE =================
@@ -47,7 +44,7 @@ let aboveSurplusCount = 0;
 let passiveCount      = 0;
 let tickCount         = 0;
 let fanOnTime         = 0;
-let isPassiveRun      = false;  // true when fan on for passive ventilation
+let isPassiveRun      = false;
 
 let int_humidity         = 0;
 let int_temperature      = 0;
@@ -73,14 +70,14 @@ let lastSeenTemp = null;
 
 // ================= PHYSICS =================
 function calcAH(t, rh) {
-  const Psat = 6.1078 * Math.exp((17.625 * t) / (243.04 + t));
+  let Psat = 6.1078 * Math.exp((17.625 * t) / (243.04 + t));
   return (Psat * rh * 2.16679) / (273.15 + t);
 }
 
 function calcDP(t, rh) {
-  const b = 17.625;
-  const c = 243.04;
-  const gamma = (b * t / (c + t)) + Math.log(rh / 100);
+  let b = 17.625;
+  let c = 243.04;
+  let gamma = (b * t / (c + t)) + Math.log(rh / 100);
   return (c * gamma) / (b - gamma);
 }
 
@@ -114,22 +111,20 @@ function log(level, msg) {
 }
 
 // ================= KVS BOOT =================
-// Reads all KVS_DEFAULTS keys into S, writing defaults for any missing keys.
-// Also reads mqtt.topic_prefix from KVS (set by watchdog via kvsConfig) as S.mqtt_prefix.
 function loadSettings(callback) {
   let keys = Object.keys(KVS_DEFAULTS);
   let i = 0;
 
   // Seed S with defaults first so log() works even before KVS reads complete
-  for (let k in KVS_DEFAULTS) {
-    let short = k.slice(4); // strip "fan." prefix
+  for (let ki = 0; ki < keys.length; ki++) {
+    let k = keys[ki];
+    let short = k.slice(4);
     S[short] = KVS_DEFAULTS[k];
   }
-  S.mqtt_prefix = "shelly/bathroom-fan"; // fallback until KVS read completes
+  S.mqtt_prefix = "shelly/bathroom-fan";
 
   function next() {
     if (i >= keys.length) {
-      // All fan.* keys loaded — now read mqtt.topic_prefix as single source of truth
       Shelly.call("KVS.Get", { key: "mqtt.topic_prefix" }, function(res, err) {
         if (!err && res && res.value) {
           S.mqtt_prefix = res.value;
@@ -139,18 +134,16 @@ function loadSettings(callback) {
       return;
     }
     let key = keys[i];
-    let short = key.slice(4); // strip "fan." prefix
+    let short = key.slice(4);
     i++;
 
     Shelly.call("KVS.Get", { key: key }, function(res, err) {
       if (err || !res) {
-        // Key missing — write default
         Shelly.call("KVS.Set", { key: key, value: String(KVS_DEFAULTS[key]) }, function() {
           next();
         });
         return;
       }
-      // Key exists — parse and load into S
       let val = res.value;
       let num = val * 1;
       S[short] = (val !== "" && !isNaN(num)) ? num : val;
@@ -236,7 +229,7 @@ function inQuietHours() {
 // ================= FAN CONTROL =================
 function autoFanControl(onNewReading) {
 
-  // --- 0. SUSTAINED ABSOLUTE SURPLUS TRIGGER (shower) ---
+  // --- 0. SUSTAINED ABSOLUTE SURPLUS TRIGGER ---
   if (onNewReading) {
     if (moistureSurplus > S.abs_surplus_threshold) {
       aboveSurplusCount++;
@@ -303,7 +296,7 @@ function autoFanControl(onNewReading) {
     return;
   }
 
-  // --- 3. USER OVERRIDE (The "Boss" Rule) ---
+  // --- 3. USER OVERRIDE ---
   if (fan_switch_status === true) {
     boostCounter = 0;
     return;
@@ -313,7 +306,6 @@ function autoFanControl(onNewReading) {
   if (fan_output_status === true && fan_switch_status === false) {
     let runtime = Shelly.getComponentStatus("sys").unixtime - fanOnTime;
 
-    // Passive run — fixed runtime, no dry target needed
     if (isPassiveRun) {
       if (runtime >= S.passive_runtime) {
         log("ACTION", "Passive ventilation complete (" + runtime + "s). Fan OFF.");
@@ -324,9 +316,8 @@ function autoFanControl(onNewReading) {
       return;
     }
 
-    // Shower run — minimum runtime + dry target
     if (runtime < S.min_runtime) {
-      log("STATUS", "Min runtime not reached (" + runtime + "s / " + S.min_runtime + "s) — continuing.");
+      log("STATUS", "Min runtime not reached (" + runtime + "s / " + S.min_runtime + "s) -- continuing.");
       return;
     }
 
@@ -356,7 +347,7 @@ function log_status() {
     "DewPoint: " + int_dewpoint.toFixed(1) + "C",
     "IntSpread: " + int_spread.toFixed(1) + "C |",
     "External: " + (ext_temperature ? ext_temperature.value : "N/A") + "C / " + (ext_humidity ? ext_humidity.value : "N/A") + "%",
-    "DewPoint: " + ext_dewpoint.toFixed(1) + "C",
+    "DewPoint: " + ext_dewpoint.toFixed(1) + "C"
   ].join(" "));
   log("STATUS", [
     "moistureSurplus: " + moistureSurplus.toFixed(2) + "g |",
@@ -364,7 +355,7 @@ function log_status() {
     "surplus_trend: " + surplus_trend.toFixed(2) + " |",
     "aboveSurplusCount: " + aboveSurplusCount + " |",
     "passiveCount: " + passiveCount + " |",
-    "dryingPotential: " + ((dryingPotential - 1) * 100).toFixed(0) + "% |",
+    "dryingPotential: " + ((dryingPotential - 1) * 100).toFixed(0) + "% |"
   ].join(" "));
   log("STATUS", [
     "FanOn: " + fan_output_status + " |",
