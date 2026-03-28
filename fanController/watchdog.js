@@ -1,4 +1,4 @@
-// version: 1.1.6
+// version: 1.1.7
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
@@ -383,10 +383,7 @@ function gkrs(kl, cb) {
     let ftr = "let i = 0;\nfunction nx() {\n" +
       "  if (i >= keys.length) { print(\"kvs_restore complete\"); Shelly.call(\"Script.Stop\", { id: Shelly.getCurrentScriptId() }, null); return; }\n" +
       "  let k = keys[i][0]; let v = keys[i][1]; i++;\n" +
-      "  Shelly.call(\"KVS.Get\", { key: k }, function(r, e) {\n" +
-      "    if (!e && r) { nx(); return; }\n" +
-      "    Shelly.call(\"KVS.Set\", { key: k, value: v }, function() { nx(); });\n" +
-      "  });\n" +
+      "  Shelly.call(\"KVS.Set\", { key: k, value: v }, function() { nx(); });\n" +
       "}\nnx();";
     Shelly.call("Script.PutCode", { id: id, code: ftr, append: true }, function(r, e) {
       ftr = null;
