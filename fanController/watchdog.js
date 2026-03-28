@@ -200,8 +200,20 @@ function dpsc(sc, cb) {
           });
         });
       }
-      if (rn) { scll("Script.Stop", { id: sc.id }, function() { dwr(); }); }
-      else { dwr(); }
+      function doStop() {
+        if (rn) { scll("Script.Stop", { id: sc.id }, function() { dwr(); }); }
+        else { dwr(); }
+      }
+      // If script doesn't exist yet (-105 or null result), create it first
+      if (e || !r) {
+        scll("Script.Create", { name: sc.name }, function(r2, e2) {
+          if (e2) { lg("ERR", "create:" + sc.name); cb(false); return; }
+          lg("INFO", "created slot for:" + sc.name);
+          dwr();
+        });
+      } else {
+        doStop();
+      }
     });
   });
 }
