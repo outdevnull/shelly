@@ -1,4 +1,4 @@
-// version: 1.0.2
+// version: 1.0.3
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
@@ -167,9 +167,7 @@ function hsup(rv) {
           // Restart fan controller that was stopped for heap space
           scll("Script.Start", { id: 3 }, function() {
             lg("INFO", "slot " + WDSL + " updated -- deleting temp " + SLFI);
-            scll("Script.Stop",   { id: SLFI }, function() {
-              scll("Script.Delete", { id: SLFI }, null);
-            });
+            Shelly.call("Script.Delete", { id: SLFI }, null);
           });
         });
       });
