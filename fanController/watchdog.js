@@ -80,7 +80,7 @@ function log(level, msg) {
   }, null);
 }
 
-// ================= GITHUB — SMALL FILE (manifest) =================
+// ================= GITHUB -- SMALL FILE (manifest) =================
 function githubGetSmall(file, callback) {
   let assembled = "";
   let offset    = 0;
@@ -111,7 +111,7 @@ function githubGetSmall(file, callback) {
   doFetch();
 }
 
-// ================= GITHUB — PIPELINED FETCH+DEPLOY =================
+// ================= GITHUB -- PIPELINED FETCH+DEPLOY =================
 function githubFetchAndDeploy(file, scriptId, isFirst, callback) {
   let fetchOffset = 0;
   let firstPut    = isFirst;
@@ -301,7 +301,7 @@ function provisionComponents(components, callback) {
 
 // ================= WATCHDOG SELF-UPDATE =================
 function selfUpdate(remoteVersion, callback) {
-  log("INFO", "Self-update to " + remoteVersion + " — deploying to slot " + partnerId);
+  log("INFO", "Self-update to " + remoteVersion + " -- deploying to slot " + partnerId);
 
   // Stop partner if running
   shellyCall("Script.GetStatus", { id: partnerId }, function(res, err) {
@@ -324,13 +324,13 @@ function writeToPartner(remoteVersion, callback) {
         return;
       }
       kvsSet("s." + partnerId + ".ok", "1", function() {
-        log("INFO", "Self-update written to slot " + partnerId + " — starting");
+        log("INFO", "Self-update written to slot " + partnerId + " -- starting");
         shellyCall("Script.Start", { id: partnerId }, function(res, err) {
           if (err) {
             log("ERROR", "Failed to start slot " + partnerId);
             callback(false);
           } else {
-            // New watchdog takes over — we exit
+            // New watchdog takes over -- we exit
             callback(true);
           }
         });
@@ -339,11 +339,11 @@ function writeToPartner(remoteVersion, callback) {
   });
 }
 
-// On boot — check if partner is older and delete it
+// On boot -- check if partner is older and delete it
 function cleanupPartner(callback) {
   shellyCall("Script.GetCode", { id: partnerId, offset: 0, len: 20 }, function(res, err) {
     if (err || !res) {
-      // Partner doesn't exist — nothing to clean up
+      // Partner doesn't exist -- nothing to clean up
       callback();
       return;
     }
@@ -427,7 +427,7 @@ function healthCheck(scripts, callback) {
         let fails = val ? (val * 1) : 0;
         fails++;
         if (fails >= 3) {
-          log("WARN", "Script " + script.id + " failed 3 times — forcing redeploy");
+          log("WARN", "Script " + script.id + " failed 3 times -- forcing redeploy");
           kvsSet("s." + script.id + ".ok", "0", null);
           kvsSet("s." + script.id + ".fails", "0", null);
           forceRedeploy = true;
@@ -464,19 +464,19 @@ function checkAndDeployScript(scripts, i, forcedFlags, anyDeployed, callback) {
   let script = scripts[i];
   let forced = forcedFlags[i];
 
-  // Skip watchdog slots — handled separately via selfUpdate
+  // Skip watchdog slots -- handled separately via selfUpdate
   if (script.id === selfId || script.id === partnerId) {
     checkAndDeployScript(scripts, i + 1, forcedFlags, anyDeployed, callback);
     return;
   }
 
-  // Fetch only first 20 bytes for version check — avoids full file load
+  // Fetch only first 20 bytes for version check -- avoids full file load
   let versionUrl = CF_WORKER + "/?file=" + cfg.path + "/" + script.file +
                    "&ref=" + cfg.branch + "&offset=0&len=20";
 
   Shelly.call("HTTP.GET", { url: versionUrl }, function(res, err) {
     if (err || !res || res.code !== 200) {
-      log("ERROR", "Version check failed: " + script.file + " — skipping");
+      log("ERROR", "Version check failed: " + script.file + " -- skipping");
       checkAndDeployScript(scripts, i + 1, forcedFlags, anyDeployed, callback);
       return;
     }
@@ -510,7 +510,7 @@ function checkWatchdogUpdate(callback) {
       if (remoteVersion && localVersion !== remoteVersion) {
         selfUpdate(remoteVersion, function(ok) {
           if (ok) {
-            // New watchdog is running — stop here
+            // New watchdog is running -- stop here
             callback("updated");
           } else {
             callback(false);
@@ -546,7 +546,7 @@ function runVersionCycle() {
 
     githubGetSmall(MANIFEST_FILE, function(body) {
       if (!body) {
-        log("ERROR", "Failed to fetch manifest — retry in 300s");
+        log("ERROR", "Failed to fetch manifest -- retry in 300s");
         scheduleNext(300);
         return;
       }
@@ -604,7 +604,7 @@ function boot() {
             kvsGet("wd.rpc_delay", function(rpc_delay) {
 
               if (!branch || !path) {
-                log("ERROR", "Missing wd.branch or wd.path — halting");
+                log("ERROR", "Missing wd.branch or wd.path -- halting");
                 return;
               }
 
