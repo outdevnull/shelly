@@ -5,7 +5,7 @@
 
 let MANIFEST_FILE = "manifest.json";
 let CF_WORKER     = "https://shelly-proxy.ash-b39.workers.dev";
-let FETCH_CHUNK   = 8192;
+let FETCH_CHUNK   = 4096;
 let DEPLOY_CHUNK  = 1024;
 let WD_SLOT       = 2;   // permanent watchdog home
 
