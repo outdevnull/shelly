@@ -1,4 +1,4 @@
-// version: 1.0.7
+// version: 1.0.8
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
@@ -202,6 +202,8 @@ function dpsc(sc, cb) {
           if (!ok) { lg("ERR", "deploy:" + sc.name); cb(false); return; }
           kset("s." + sc.id + ".ok", "1", function() {
             lg("INFO", "deployed:" + sc.name);
+            // Enable autostart for this script
+            scll("Script.SetConfig", { id: sc.id, config: { enable: sc.autostart } }, null);
             if (!sc.autostart) { cb(true); return; }
             scll("Script.Start", { id: sc.id }, function(r2, e2) {
               if (e2) { kset("s." + sc.id + ".ok", "0", null); cb(false); return; }
@@ -492,7 +494,10 @@ function boot() {
 
   kget("wd.rd", function(rd) {
     rDly = rd ? (rd * 1) : 200;
-    kset("wd.nc", "300", null);  // reset backoff on boot
+    kset("wd.nc", "300", null);
+    // Ensure watchdog and bootstrapper are enabled for autostart
+    Shelly.call("Script.SetConfig", { id: WDSL, config: { enable: true } }, null);
+    Shelly.call("Script.SetConfig", { id: 1,    config: { enable: false } }, null);
     Shelly.call("Script.GetStatus", { id: 1 }, function(sr, se) {
       if (!se && sr && sr.running) {
         Shelly.call("Script.Stop", { id: 1 }, function() {
