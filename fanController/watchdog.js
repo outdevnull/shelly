@@ -100,7 +100,7 @@ function gfad(fi, sid, cb) {
     Shelly.call("Script.PutCode", { id: sid, code: pc, append: ap }, function(r, e) {
       pc = null; r = null;
       if (e) { lg("ERR", "putcode:" + sid); dn(false); return; }
-      dput(da, po + PCHK, lf, dn);
+      Timer.set(0, false, function() { dput(da, po + PCHK, lf, dn); });
     });
   }
 
