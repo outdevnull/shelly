@@ -1,4 +1,4 @@
-// version: 1.0.3
+// version: 1.0.4
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
@@ -143,18 +143,36 @@ function hsup(rv) {
     lg("INFO", "new v" + rv + " spawning temp");
     // Stop other scripts first to free mJS heap for deploy
     scll("Script.Stop", { id: 3 }, function() {
-      scll("Script.Create", { name: "wdup" }, function(r, e) {
-        if (e || !r) { lg("ERR", "create temp"); return; }
-        let tid = r.id;
-        gfad("watchdog.js", tid, function(ok) {
-          if (!ok) { scll("Script.Delete", { id: tid }, null); return; }
-          kset("s." + tid + ".ok", "1", function() {
-            scll("Script.Start", { id: tid }, function(r2, e2) {
-              if (e2) { scll("Script.Delete", { id: tid }, null); }
-              else { lg("INFO", "temp " + tid + " started"); }
+      // Clean up any orphaned wdup slot first
+      scll("Script.List", {}, function(r, e) {
+        let oldId = null;
+        if (!e && r && r.scripts) {
+          for (let i = 0; i < r.scripts.length; i++) {
+            if (r.scripts[i].name === "wdup") { oldId = r.scripts[i].id; break; }
+          }
+        }
+        function doCreate() {
+          scll("Script.Create", { name: "wdup" }, function(r2, e2) {
+            if (e2 || !r2) { lg("ERR", "create temp"); scll("Script.Start", { id: 3 }, null); return; }
+            let tid = r2.id;
+            gfad("watchdog.js", tid, function(ok) {
+              if (!ok) { scll("Script.Delete", { id: tid }, null); return; }
+              kset("s." + tid + ".ok", "1", function() {
+                scll("Script.Start", { id: tid }, function(r3, e3) {
+                  if (e3) { scll("Script.Delete", { id: tid }, null); }
+                  else { lg("INFO", "temp " + tid + " started"); }
+                });
+              });
             });
           });
-        });
+        }
+        if (oldId) {
+          scll("Script.Stop", { id: oldId }, function() {
+            scll("Script.Delete", { id: oldId }, function() { doCreate(); });
+          });
+        } else {
+          doCreate();
+        }
       });
     });
   } else {
