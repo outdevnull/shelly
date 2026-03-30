@@ -1,4 +1,4 @@
-// version: 1.0.4
+// version: 1.0.5
 // === Bathroom Fan - Forensic Logic with Startup & Trace Logging ===
 // Note: Hard safety cutoff is handled by Shelly's built-in auto-off timer (1hr).
 
@@ -318,7 +318,7 @@ function autoFanControl(onNewReading) {
     }
 
     if (runtime < S.min_runtime) {
-      log("STATUS", "Min runtime not reached (" + runtime + "s / " + S.min_runtime + "s) -- continuing.");
+      if (runtime % 300 < 10) log("STATUS", "Min runtime not reached (" + runtime + "s / " + S.min_runtime + "s) -- continuing.");
       return;
     }
 
