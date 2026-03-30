@@ -1,4 +1,4 @@
-// version: 1.0.1
+// version: 1.0.4
 // === Bathroom Fan - Forensic Logic with Startup & Trace Logging ===
 // Note: Hard safety cutoff is handled by Shelly's built-in auto-off timer (1hr).
 
@@ -21,9 +21,7 @@ let KVS_DEFAULTS = {
   "fan.room_name":                  "Bathroom",
   "fan.shower_spike":               0.60,
   "fan.abs_surplus_threshold":      2.0,
-  "fan.dry_target":                 0.40,
-  "fan.equilibrium_gap":            0.02,
-  "fan.equilibrium_max":            0.90,
+  "fan.baseline_margin":            0.1,
   "fan.boost_cycles":               5,
   "fan.min_runtime":                900,
   "fan.quiet_hours_start":          11,
@@ -44,6 +42,7 @@ let aboveSurplusCount = 0;
 let passiveCount      = 0;
 let tickCount         = 0;
 let fanOnTime         = 0;
+let fanOnAvgSurplus   = 0;
 let isPassiveRun      = false;
 
 let int_humidity         = 0;
@@ -125,9 +124,9 @@ function loadSettings(callback) {
 
   function next() {
     if (i >= keys.length) {
-      Shelly.call("KVS.Get", { key: "mqtt.topic_prefix" }, function(res, err) {
-        if (!err && res && res.value) {
-          S.mqtt_prefix = res.value;
+      Shelly.call("MQTT.GetConfig", {}, function(res, err) {
+        if (!err && res && res.topic_prefix) {
+          S.mqtt_prefix = res.topic_prefix;
         }
         callback();
       });
@@ -139,9 +138,8 @@ function loadSettings(callback) {
 
     Shelly.call("KVS.Get", { key: key }, function(res, err) {
       if (err || !res) {
-        Shelly.call("KVS.Set", { key: key, value: String(KVS_DEFAULTS[key]) }, function() {
-          next();
-        });
+        // key missing -- S already has the in-memory default, don't write to KVS
+        next();
         return;
       }
       let val = res.value;
@@ -242,7 +240,8 @@ function autoFanControl(onNewReading) {
     if (inQuietHours() && avgMoistureSurplus < S.quiet_hours_avg_override) {
       log("STATUS", "Abs surplus suppressed (quiet hours). surplus: " + moistureSurplus.toFixed(2) + "g");
     } else {
-      log("ACTION", "Sustained surplus (" + moistureSurplus.toFixed(2) + "g x" + aboveSurplusCount + " readings). Fan ON.");
+      fanOnAvgSurplus = avgMoistureSurplus;
+      log("ACTION", "Sustained surplus (" + moistureSurplus.toFixed(2) + "g x" + aboveSurplusCount + " readings). Fan ON. baseline: " + fanOnAvgSurplus.toFixed(2) + "g");
       fanOnReason  = "Sustained surplus (" + moistureSurplus.toFixed(2) + "g)";
       boostCounter = 0;
       aboveSurplusCount = 0;
@@ -260,7 +259,8 @@ function autoFanControl(onNewReading) {
       log("STATUS", "Spike suppressed (quiet hours). avgMoistureSurplus: " + avgMoistureSurplus.toFixed(2) + "g.");
       return;
     }
-    log("ACTION", "Shower spike (" + surplus_trend.toFixed(2) + "g). Fan ON.");
+    fanOnAvgSurplus = avgMoistureSurplus;
+    log("ACTION", "Shower spike (" + surplus_trend.toFixed(2) + "g). Fan ON. baseline: " + fanOnAvgSurplus.toFixed(2) + "g");
     fanOnReason  = "Shower spike (" + surplus_trend.toFixed(2) + "g)";
     boostCounter = 0;
     aboveSurplusCount = 0;
@@ -286,7 +286,8 @@ function autoFanControl(onNewReading) {
     if (inQuietHours() && avgMoistureSurplus < S.quiet_hours_avg_override) {
       log("STATUS", "Passive ventilation suppressed (quiet hours).");
     } else {
-      log("ACTION", "Passive ventilation triggered. avgSurplus: " + avgMoistureSurplus.toFixed(2) + "g dryingPotential: " + ((dryingPotential - 1) * 100).toFixed(0) + "%. Fan ON.");
+      fanOnAvgSurplus = avgMoistureSurplus;
+      log("ACTION", "Passive ventilation triggered. avgSurplus: " + avgMoistureSurplus.toFixed(2) + "g dryingPotential: " + ((dryingPotential - 1) * 100).toFixed(0) + "%. Fan ON. baseline: " + fanOnAvgSurplus.toFixed(2) + "g");
       fanOnReason  = "Passive ventilation";
       passiveCount = 0;
       isPassiveRun = true;
@@ -321,16 +322,15 @@ function autoFanControl(onNewReading) {
       return;
     }
 
-    let isDry     = avgMoistureSurplus < S.dry_target;
-    let isStalled = Math.abs(surplus_trend) < S.equilibrium_gap && avgMoistureSurplus < S.equilibrium_max;
+    let isBackToBaseline = avgMoistureSurplus <= (fanOnAvgSurplus + S.baseline_margin);
 
-    if (isDry || isStalled) {
+    if (isBackToBaseline) {
       if (boostCounter < S.boost_cycles) {
         boostCounter++;
-        log("BOOST", "Target reached. Over-run cycle: " + boostCounter + "/" + S.boost_cycles);
+        log("BOOST", "Back to baseline. Over-run cycle: " + boostCounter + "/" + S.boost_cycles + " avgSurplus: " + avgMoistureSurplus.toFixed(2) + "g baseline: " + fanOnAvgSurplus.toFixed(2) + "g");
       } else {
-        log("ACTION", "Drying complete. Fan OFF.");
-        fanOnReason  = "Room is as dry as it can be";
+        log("ACTION", "Back to baseline. avgSurplus: " + avgMoistureSurplus.toFixed(2) + "g baseline: " + fanOnAvgSurplus.toFixed(2) + "g margin: " + S.baseline_margin.toFixed(2) + "g. Fan OFF.");
+        fanOnReason  = "Back to pre-shower baseline";
         boostCounter = 0;
         Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: false });
       }
@@ -352,6 +352,7 @@ function log_status() {
   log("STATUS", [
     "moistureSurplus: " + moistureSurplus.toFixed(2) + "g |",
     "avgMoistureSurplus: " + avgMoistureSurplus.toFixed(2) + "g |",
+    "fanOnBaseline: " + fanOnAvgSurplus.toFixed(2) + "g |",
     "surplus_trend: " + surplus_trend.toFixed(2) + " |",
     "aboveSurplusCount: " + aboveSurplusCount + " |",
     "passiveCount: " + passiveCount + " |",
@@ -391,8 +392,9 @@ Timer.set(2000, false, function() {
     surplus_trend = 0;
 
     if (fan_output_status === true) {
-      fanOnTime   = Shelly.getComponentStatus("sys").unixtime;
-      fanOnReason = "Pre-existing (startup)";
+      fanOnTime       = Shelly.getComponentStatus("sys").unixtime;
+      fanOnAvgSurplus = avgMoistureSurplus;
+      fanOnReason     = "Pre-existing (startup)";
     }
 
     if (avgMoistureSurplus > 0 && moistureSurplus < avgMoistureSurplus * CONFIG.stale_history_ratio) {

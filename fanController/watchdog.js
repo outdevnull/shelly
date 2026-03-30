@@ -1,9 +1,9 @@
-// version: 1.1.1
+// version: 1.2.1
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
 let CFW  = "https://shelly-proxy.ash-b39.workers.dev";
-let FCHK = 4096;
+let FCHK = 2048;
 let PCHK = 1024;
 let WDSL = 2;
 let SLFI = Shelly.getCurrentScriptId();
@@ -383,15 +383,12 @@ function gkrs(kl, cb) {
     let ftr = "let i = 0;\nfunction nx() {\n" +
       "  if (i >= keys.length) { print(\"kvs_restore complete\"); Shelly.call(\"Script.Stop\", { id: Shelly.getCurrentScriptId() }, null); return; }\n" +
       "  let k = keys[i][0]; let v = keys[i][1]; i++;\n" +
-      "  Shelly.call(\"KVS.Get\", { key: k }, function(r, e) {\n" +
-      "    if (!e && r) { nx(); return; }\n" +
-      "    Shelly.call(\"KVS.Set\", { key: k, value: v }, function() { nx(); });\n" +
-      "  });\n" +
+      "  Shelly.call(\"KVS.Set\", { key: k, value: v }, function() { nx(); });\n" +
       "}\nnx();";
     Shelly.call("Script.PutCode", { id: id, code: ftr, append: true }, function(r, e) {
       ftr = null;
       if (e) { lg("ERR", "kvs_restore ftr"); cb(); return; }
-      Shelly.call("Script.SetConfig", { id: id, config: { enable: true } }, null);
+      Shelly.call("Script.SetConfig", { id: id, config: { enable: false } }, null);
       lg("INFO", "kvs_restore deployed id:" + id);
       cb();
     });
@@ -497,7 +494,7 @@ function prfx(cf, ckv, cb) {
       if (gm === sm) { scll(sm, { config: ds }, function(r, e) { if (e) lg("WARN", "fail:" + sm); nx(); }); return; }
       scll(gm, {}, function(r, e) {
         if (!e && r && !cdif(ds, r)) {
-          if (ckv) scll("KVS.Set", { key: ky, value: "configured" }, function() { nx(); });
+          if (ckv) scll("KVS.Set", { key: ky, value: JSON.stringify(ds) }, function() { nx(); });
           else nx();
           return;
         }
@@ -505,14 +502,14 @@ function prfx(cf, ckv, cb) {
           if (e2) lg("WARN", "fail:" + sm);
           else if (r2 && r2.restart_required) lg("WARN", sm + " REBOOT");
           else lg("INFO", sm + " ok");
-          if (ckv) scll("KVS.Set", { key: ky, value: "configured" }, function() { nx(); });
+          if (ckv) scll("KVS.Set", { key: ky, value: JSON.stringify(ds) }, function() { nx(); });
           else nx();
         });
       });
     }
 
     if (ckv) {
-      scll("KVS.Get", { key: ky }, function(r, e) { if (!e && r) { nx(); return; } ap(); });
+      scll("KVS.Get", { key: ky }, function(r, e) { if (!e && r && r.value !== "configured") { nx(); return; } ap(); });
     } else { ap(); }
   }
   nx();
@@ -571,7 +568,7 @@ function snxt(s) {
 // ================= WAIT KVS RESTORE =================
 // Find kvs_restore by name, then poll until it stops running.
 // There is a window between device boot and kvs_restore completing where KVS
-// may be empty — this function bridges that window before normal boot proceeds.
+// may be empty -- this function bridges that window before normal boot proceeds.
 function wkr(cb) {
   fksl(function(sid) {
     if (sid === null) { cb(); return; } // not yet created, nothing to wait for
@@ -626,12 +623,18 @@ function boot() {
         });
       }
       if (!br) {
-        lg("WARN", "KVS empty, wait kvs_restore");
-        wkr(function() {
-          // Re-read wd.rd in case it was restored with a non-default value
-          kget("wd.rd", function(rd2) {
-            rDly = rd2 ? (rd2 * 1) : 200;
-            proceed();
+        // KVS wiped -- start kvs_restore explicitly and wait for it to finish
+        lg("WARN", "KVS empty, starting kvs_restore");
+        fksl(function(sid) {
+          if (sid === null) { lg("WARN", "no kvs_restore slot"); proceed(); return; }
+          Shelly.call("Script.Start", { id: sid }, function() {
+            wkr(function() {
+              // Re-read wd.rd in case it was restored with a non-default value
+              kget("wd.rd", function(rd2) {
+                rDly = rd2 ? (rd2 * 1) : 200;
+                proceed();
+              });
+            });
           });
         });
       } else {
