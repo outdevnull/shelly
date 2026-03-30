@@ -21,14 +21,15 @@
     "fan.room_name":                 "Bathroom",
     "fan.shower_spike":              0.60,
     "fan.abs_surplus_threshold":     2.0,
+    "fan.abs_surplus_delta":         0.6,
     "fan.baseline_margin":           0.1,
     "fan.boost_cycles":              5,
     "fan.min_runtime":               900,
     "fan.quiet_hours_start":         11,
     "fan.quiet_hours_end":           18,
     "fan.quiet_hours_avg_override":  0.5,
-    "fan.passive_surplus_threshold": 1.0,
-    "fan.passive_drying_min":        1.10,
+    "fan.passive_surplus_threshold": 2.5,
+    "fan.passive_drying_min":        1.25,
     "fan.passive_runtime":           600
   },
   "components": [

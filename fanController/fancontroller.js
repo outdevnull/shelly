@@ -1,4 +1,4 @@
-// version: 1.0.5
+// version: 1.0.6
 // === Bathroom Fan - Forensic Logic with Startup & Trace Logging ===
 // Note: Hard safety cutoff is handled by Shelly's built-in auto-off timer (1hr).
 
@@ -21,14 +21,15 @@ let KVS_DEFAULTS = {
   "fan.room_name":                  "Bathroom",
   "fan.shower_spike":               0.60,
   "fan.abs_surplus_threshold":      2.0,
+  "fan.abs_surplus_delta":          0.6,
   "fan.baseline_margin":            0.1,
   "fan.boost_cycles":               5,
   "fan.min_runtime":                900,
   "fan.quiet_hours_start":          11,
   "fan.quiet_hours_end":            18,
   "fan.quiet_hours_avg_override":   0.5,
-  "fan.passive_surplus_threshold":  1.0,
-  "fan.passive_drying_min":         1.10,
+  "fan.passive_surplus_threshold":  2.5,
+  "fan.passive_drying_min":         1.25,
   "fan.passive_runtime":            600
 };
 
@@ -227,9 +228,9 @@ function inQuietHours() {
 // ================= FAN CONTROL =================
 function autoFanControl(onNewReading) {
 
-  // --- 0. SUSTAINED ABSOLUTE SURPLUS TRIGGER ---
+  // --- 0. SUSTAINED SURPLUS TRIGGER (adaptive: delta above rolling avg) ---
   if (onNewReading) {
-    if (moistureSurplus > S.abs_surplus_threshold) {
+    if (moistureSurplus > avgMoistureSurplus + S.abs_surplus_delta) {
       aboveSurplusCount++;
     } else {
       aboveSurplusCount = 0;
@@ -241,7 +242,7 @@ function autoFanControl(onNewReading) {
       log("STATUS", "Abs surplus suppressed (quiet hours). surplus: " + moistureSurplus.toFixed(2) + "g");
     } else {
       fanOnAvgSurplus = avgMoistureSurplus;
-      log("ACTION", "Sustained surplus (" + moistureSurplus.toFixed(2) + "g x" + aboveSurplusCount + " readings). Fan ON. baseline: " + fanOnAvgSurplus.toFixed(2) + "g");
+      log("ACTION", "Sustained surplus (" + moistureSurplus.toFixed(2) + "g, " + S.abs_surplus_delta.toFixed(2) + "g above avg " + avgMoistureSurplus.toFixed(2) + "g, x" + aboveSurplusCount + " readings). Fan ON. baseline: " + fanOnAvgSurplus.toFixed(2) + "g");
       fanOnReason  = "Sustained surplus (" + moistureSurplus.toFixed(2) + "g)";
       boostCounter = 0;
       aboveSurplusCount = 0;
@@ -317,10 +318,7 @@ function autoFanControl(onNewReading) {
       return;
     }
 
-    if (runtime < S.min_runtime) {
-      if (runtime % 300 < 10) log("STATUS", "Min runtime not reached (" + runtime + "s / " + S.min_runtime + "s) -- continuing.");
-      return;
-    }
+    if (runtime < S.min_runtime) return;
 
     let isBackToBaseline = avgMoistureSurplus <= (fanOnAvgSurplus + S.baseline_margin);
 
