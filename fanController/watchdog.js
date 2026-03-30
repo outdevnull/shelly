@@ -1,4 +1,4 @@
-// version: 1.2.1
+// version: 1.2.2
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
@@ -424,7 +424,7 @@ function rvcl() {
       function dvc() {
         chkf(mfst.scripts, function(fl) {
           cads(mfst.scripts, 0, fl, false, function(ad) {
-            let kl = ["wd.br", "wd.pt", "wd.pv"];
+            let kl = ["wd.br", "wd.pt", "wd.pv", "wd.kvd_ver"];
             let dk = Object.keys(mfst.kvsDefaults || {});
             let ck = Object.keys(mfst.kvsConfig || {});
             for (let j = 0; j < dk.length; j++) kl.push(dk[j]);
@@ -449,8 +449,12 @@ function rvcl() {
       }
 
       Shelly.call("KVS.Get", { key: "wd.pv" }, function(r, e) {
-        if (!e && r && r.value === "1") { lg("INFO", "prov skip"); dvc(); }
-        else { prov(mfst, function() { dvc(); }); }
+        if (!e && r && r.value === "1") {
+          lg("INFO", "prov skip");
+          chkd(mfst, function() { dvc(); });
+        } else {
+          prov(mfst, function() { chkd(mfst, function() { dvc(); }); });
+        }
       });
     });
   });
@@ -529,6 +533,22 @@ function prvd(df, cb) {
     });
   }
   nx();
+}
+
+// ================= KVS DEFAULTS VERSION CHECK =================
+function chkd(mf, cb) {
+  let dv = mf.kvsDefaultsVersion || "0";
+  kget("wd.kvd_ver", function(cv) {
+    if (cv === dv) { cb(); return; }
+    lg("INFO", "kvd update v" + dv);
+    let ks = Object.keys(mf.kvsDefaults || {}); let i = 0;
+    function nx() {
+      if (i >= ks.length) { kset("wd.kvd_ver", dv, function() { cb(); }); return; }
+      let k = ks[i]; let v = mf.kvsDefaults[k]; i++;
+      scll("KVS.Set", { key: k, value: String(v) }, function() { nx(); });
+    }
+    nx();
+  });
 }
 
 function prvc(cp, cb) {

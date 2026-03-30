@@ -1,4 +1,5 @@
 {
+  "kvsDefaultsVersion": "1",
   "config": {
     "BLE.SetConfig": {
       "config": {
