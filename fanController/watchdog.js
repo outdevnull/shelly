@@ -1,4 +1,4 @@
-// version: 1.2.2
+// version: 1.2.3
 // === Shelly Watchdog ===
 
 let MFIL = "manifest.json";
@@ -543,12 +543,26 @@ function chkd(mf, cb) {
     lg("INFO", "kvd update v" + dv);
     let ks = Object.keys(mf.kvsDefaults || {}); let i = 0;
     function nx() {
-      if (i >= ks.length) { kset("wd.kvd_ver", dv, function() { cb(); }); return; }
+      if (i >= ks.length) { kset("wd.kvd_ver", dv, function() { rst(mf, cb); }); return; }
       let k = ks[i]; let v = mf.kvsDefaults[k]; i++;
       scll("KVS.Set", { key: k, value: String(v) }, function() { nx(); });
     }
     nx();
   });
+}
+
+function rst(mf, cb) {
+  let sc = mf.scripts || []; let i = 0; let me = Shelly.getCurrentScriptId();
+  function nx() {
+    if (i >= sc.length) { cb(); return; }
+    let s = sc[i]; i++;
+    if (!s.autostart || s.id === me) { nx(); return; }
+    lg("INFO", "rst script:" + s.id);
+    scll("Script.Stop",  { id: s.id }, function() {
+      scll("Script.Start", { id: s.id }, function() { nx(); });
+    });
+  }
+  nx();
 }
 
 function prvc(cp, cb) {
