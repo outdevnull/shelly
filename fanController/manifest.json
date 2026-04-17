@@ -1,5 +1,5 @@
 {
-  "kvsDefaultsVersion": "1",
+  "kvsDefaultsVersion": "2",
   "config": {
     "BLE.SetConfig": {
       "config": {
@@ -23,7 +23,8 @@
     "fan.shower_spike":              0.60,
     "fan.abs_surplus_threshold":     2.0,
     "fan.abs_surplus_delta":         0.6,
-    "fan.baseline_margin":           0.1,
+    "fan.spread_margin":             0.5,
+    "fan.dewpoint_spike":            1.0,
     "fan.boost_cycles":              5,
     "fan.min_runtime":               900,
     "fan.quiet_hours_start":         11,
