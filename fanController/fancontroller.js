@@ -1,4 +1,4 @@
-// version: 1.0.4
+// version: 1.0.7
 // === Bathroom Fan - Forensic Logic with Startup & Trace Logging ===
 // Note: Hard safety cutoff is handled by Shelly's built-in auto-off timer (1hr).
 
@@ -21,14 +21,16 @@ let KVS_DEFAULTS = {
   "fan.room_name":                  "Bathroom",
   "fan.shower_spike":               0.60,
   "fan.abs_surplus_threshold":      2.0,
-  "fan.baseline_margin":            0.1,
+  "fan.abs_surplus_delta":          0.6,
+  "fan.spread_margin":              0.5,
+  "fan.dewpoint_spike":             1.0,
   "fan.boost_cycles":               5,
   "fan.min_runtime":                900,
   "fan.quiet_hours_start":          11,
   "fan.quiet_hours_end":            18,
   "fan.quiet_hours_avg_override":   0.5,
-  "fan.passive_surplus_threshold":  1.0,
-  "fan.passive_drying_min":         1.10,
+  "fan.passive_surplus_threshold":  2.5,
+  "fan.passive_drying_min":         1.25,
   "fan.passive_runtime":            600
 };
 
@@ -43,6 +45,9 @@ let passiveCount      = 0;
 let tickCount         = 0;
 let fanOnTime         = 0;
 let fanOnAvgSurplus   = 0;
+let fanOnSpread       = 0;
+let prevIntDewpoint   = null;
+let dewpoint_trend    = 0;
 let isPassiveRun      = false;
 
 let int_humidity         = 0;
@@ -215,7 +220,9 @@ function onNewSensorReading() {
   avgMoistureSurplus = updateMoistureHistory(null);
   surplus_trend      = moistureSurplus - avgMoistureSurplus;
   updateMoistureHistory(moistureSurplus);
-  log("SENSOR", "New reading. surplus: " + moistureSurplus.toFixed(2) + "g trend: " + surplus_trend.toFixed(2));
+  dewpoint_trend = (prevIntDewpoint !== null) ? (int_dewpoint - prevIntDewpoint) : 0;
+  prevIntDewpoint = int_dewpoint;
+  log("SENSOR", "New reading. surplus: " + moistureSurplus.toFixed(2) + "g trend: " + surplus_trend.toFixed(2) + " dp_trend: " + dewpoint_trend.toFixed(2));
 }
 
 // ================= QUIET HOURS =================
@@ -227,9 +234,9 @@ function inQuietHours() {
 // ================= FAN CONTROL =================
 function autoFanControl(onNewReading) {
 
-  // --- 0. SUSTAINED ABSOLUTE SURPLUS TRIGGER ---
+  // --- 0. SUSTAINED SURPLUS TRIGGER (adaptive: delta above rolling avg) ---
   if (onNewReading) {
-    if (moistureSurplus > S.abs_surplus_threshold) {
+    if (moistureSurplus > avgMoistureSurplus + S.abs_surplus_delta) {
       aboveSurplusCount++;
     } else {
       aboveSurplusCount = 0;
@@ -241,7 +248,8 @@ function autoFanControl(onNewReading) {
       log("STATUS", "Abs surplus suppressed (quiet hours). surplus: " + moistureSurplus.toFixed(2) + "g");
     } else {
       fanOnAvgSurplus = avgMoistureSurplus;
-      log("ACTION", "Sustained surplus (" + moistureSurplus.toFixed(2) + "g x" + aboveSurplusCount + " readings). Fan ON. baseline: " + fanOnAvgSurplus.toFixed(2) + "g");
+      fanOnSpread     = int_spread;
+      log("ACTION", "Sustained surplus (" + moistureSurplus.toFixed(2) + "g, " + S.abs_surplus_delta.toFixed(2) + "g above avg " + avgMoistureSurplus.toFixed(2) + "g, x" + aboveSurplusCount + " readings). Fan ON. spread: " + fanOnSpread.toFixed(1) + "C");
       fanOnReason  = "Sustained surplus (" + moistureSurplus.toFixed(2) + "g)";
       boostCounter = 0;
       aboveSurplusCount = 0;
@@ -260,8 +268,28 @@ function autoFanControl(onNewReading) {
       return;
     }
     fanOnAvgSurplus = avgMoistureSurplus;
-    log("ACTION", "Shower spike (" + surplus_trend.toFixed(2) + "g). Fan ON. baseline: " + fanOnAvgSurplus.toFixed(2) + "g");
+    fanOnSpread     = int_spread;
+    log("ACTION", "Shower spike (" + surplus_trend.toFixed(2) + "g). Fan ON. spread: " + fanOnSpread.toFixed(1) + "C");
     fanOnReason  = "Shower spike (" + surplus_trend.toFixed(2) + "g)";
+    boostCounter = 0;
+    aboveSurplusCount = 0;
+    passiveCount = 0;
+    isPassiveRun = false;
+    fanOnTime    = Shelly.getComponentStatus("sys").unixtime;
+    Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: true });
+    return;
+  }
+
+  // --- 1a. DEWPOINT SPIKE TRIGGER ---
+  if (fan_output_status === false && onNewReading && dewpoint_trend > S.dewpoint_spike && int_dewpoint > ext_dewpoint) {
+    if (inQuietHours() && avgMoistureSurplus < S.quiet_hours_avg_override) {
+      log("STATUS", "Dewpoint spike suppressed (quiet hours). dp_trend: " + dewpoint_trend.toFixed(2) + "C");
+      return;
+    }
+    fanOnAvgSurplus = avgMoistureSurplus;
+    fanOnSpread     = int_spread;
+    log("ACTION", "Dewpoint spike (" + dewpoint_trend.toFixed(2) + "C). Fan ON. spread: " + fanOnSpread.toFixed(1) + "C");
+    fanOnReason  = "Dewpoint spike (" + dewpoint_trend.toFixed(2) + "C)";
     boostCounter = 0;
     aboveSurplusCount = 0;
     passiveCount = 0;
@@ -287,7 +315,8 @@ function autoFanControl(onNewReading) {
       log("STATUS", "Passive ventilation suppressed (quiet hours).");
     } else {
       fanOnAvgSurplus = avgMoistureSurplus;
-      log("ACTION", "Passive ventilation triggered. avgSurplus: " + avgMoistureSurplus.toFixed(2) + "g dryingPotential: " + ((dryingPotential - 1) * 100).toFixed(0) + "%. Fan ON. baseline: " + fanOnAvgSurplus.toFixed(2) + "g");
+      fanOnSpread     = int_spread;
+      log("ACTION", "Passive ventilation triggered. avgSurplus: " + avgMoistureSurplus.toFixed(2) + "g dryingPotential: " + ((dryingPotential - 1) * 100).toFixed(0) + "%. Fan ON. spread: " + fanOnSpread.toFixed(1) + "C");
       fanOnReason  = "Passive ventilation";
       passiveCount = 0;
       isPassiveRun = true;
@@ -317,20 +346,17 @@ function autoFanControl(onNewReading) {
       return;
     }
 
-    if (runtime < S.min_runtime) {
-      log("STATUS", "Min runtime not reached (" + runtime + "s / " + S.min_runtime + "s) -- continuing.");
-      return;
-    }
+    if (runtime < S.min_runtime) return;
 
-    let isBackToBaseline = avgMoistureSurplus <= (fanOnAvgSurplus + S.baseline_margin);
+    let isSpreadRecovered = int_spread >= (fanOnSpread - S.spread_margin);
 
-    if (isBackToBaseline) {
+    if (isSpreadRecovered) {
       if (boostCounter < S.boost_cycles) {
         boostCounter++;
-        log("BOOST", "Back to baseline. Over-run cycle: " + boostCounter + "/" + S.boost_cycles + " avgSurplus: " + avgMoistureSurplus.toFixed(2) + "g baseline: " + fanOnAvgSurplus.toFixed(2) + "g");
+        log("BOOST", "Spread recovering. Over-run cycle: " + boostCounter + "/" + S.boost_cycles + " spread: " + int_spread.toFixed(1) + "C baseline: " + fanOnSpread.toFixed(1) + "C");
       } else {
-        log("ACTION", "Back to baseline. avgSurplus: " + avgMoistureSurplus.toFixed(2) + "g baseline: " + fanOnAvgSurplus.toFixed(2) + "g margin: " + S.baseline_margin.toFixed(2) + "g. Fan OFF.");
-        fanOnReason  = "Back to pre-shower baseline";
+        log("ACTION", "Spread recovered. spread: " + int_spread.toFixed(1) + "C baseline: " + fanOnSpread.toFixed(1) + "C margin: " + S.spread_margin.toFixed(1) + "C. Fan OFF.");
+        fanOnReason  = "Spread recovered to pre-shower baseline";
         boostCounter = 0;
         Shelly.call("Switch.Set", { id: CONFIG.fan_switch_id, on: false });
       }
@@ -352,8 +378,10 @@ function log_status() {
   log("STATUS", [
     "moistureSurplus: " + moistureSurplus.toFixed(2) + "g |",
     "avgMoistureSurplus: " + avgMoistureSurplus.toFixed(2) + "g |",
-    "fanOnBaseline: " + fanOnAvgSurplus.toFixed(2) + "g |",
     "surplus_trend: " + surplus_trend.toFixed(2) + " |",
+    "int_spread: " + int_spread.toFixed(1) + "C |",
+    "fanOnSpread: " + fanOnSpread.toFixed(1) + "C |",
+    "dp_trend: " + dewpoint_trend.toFixed(2) + "C |",
     "aboveSurplusCount: " + aboveSurplusCount + " |",
     "passiveCount: " + passiveCount + " |",
     "dryingPotential: " + ((dryingPotential - 1) * 100).toFixed(0) + "% |"
@@ -394,6 +422,7 @@ Timer.set(2000, false, function() {
     if (fan_output_status === true) {
       fanOnTime       = Shelly.getComponentStatus("sys").unixtime;
       fanOnAvgSurplus = avgMoistureSurplus;
+      fanOnSpread     = int_spread;
       fanOnReason     = "Pre-existing (startup)";
     }
 
