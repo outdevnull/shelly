@@ -1,5 +1,5 @@
 {
-  "kvsDefaultsVersion": "2",
+  "kvsDefaultsVersion": "3",
   "config": {
     "BLE.SetConfig": {
       "config": {
@@ -16,9 +16,9 @@
     "device.tz":         { "method": "Sys.SetConfig",  "config": { "location": { "tz": "Australia/Sydney" } } }
   },
   "kvsDefaults": {
-    "wd.interval":                   604800,
     "wd.health_interval":            300,
     "wd.rpc_delay":                  200,
+    "wd.tz_offset":                  36000,
     "fan.room_name":                 "Bathroom",
     "fan.shower_spike":              0.60,
     "fan.abs_surplus_threshold":     2.0,
@@ -42,19 +42,10 @@
     { "type": "text",   "id": 200, "name": "moisture_trend" }
   ],
   "scripts": [
-    {
-      "id": 2,
-      "name": "watchdog",
-      "file": "watchdog.js",
-      "version": "1.0.0",
-      "autostart": false
-    },
-    {
-      "id": 3,
-      "name": "bathroom-fan",
-      "file": "fancontroller.js",
-      "version": "1.0.0",
-      "autostart": true
-    }
+    { "id": 1, "name": "bootstrap",     "file": "bootstrap.js",   "version": "2.0.0", "autostart": false },
+    { "id": 2, "name": "supervisor",    "file": "supervisor.js",   "version": "1.0.0", "autostart": true  },
+    { "id": 3, "name": "updater",       "file": "updater.js",      "version": "1.0.0", "autostart": false },
+    { "id": 4, "name": "kvs_restore",                                                   "autostart": false },
+    { "id": 5, "name": "fancontroller", "file": "fancontroller.js","version": "1.0.7", "autostart": false }
   ]
 }
