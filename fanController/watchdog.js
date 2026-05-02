@@ -3,8 +3,8 @@
 
 let MFIL = "manifest.json";
 let CFW  = "https://shelly-proxy.ash-b39.workers.dev";
-let FCHK = 2048;
-let PCHK = 1024;
+let FCHK = 512;
+let PCHK = 512;
 let WDSL = 2;
 let SLFI = Shelly.getCurrentScriptId();
 
