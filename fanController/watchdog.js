@@ -41,6 +41,7 @@ function drnQ() {
 // ================= KVS =================
 function kget(k, cb) {
   scll("KVS.Get", { key: k }, function(r, e) {
+    print(r.value);
     cb((!e && r) ? r.value : null);
   });
 }
