@@ -1,14 +1,13 @@
-// version: 1.0.1
+// version: 1.1.0
 // === Shelly Updater - Fan Controller ===
-// Started by supervisor. Checks versions, deploys changed scripts, updates KVS defaults,
-// regenerates kvs_restore. Supervisor manages fan start/stop around this. Stops self when done.
+// Started by supervisor. Provisions device on first run (wd.pv not set), checks script
+// versions, deploys changes, updates KVS defaults, regenerates kvs_restore. Stops self.
 
-let CFW    = "https://shelly-proxy.ash-b39.workers.dev";
-let MFIL   = "manifest.json";
-let FCHK   = 512;
-let PCHK   = 512;
-let SLFI   = Shelly.getCurrentScriptId();
-let SUP_ID = 2; // supervisor -- always skip, never redeploy while running
+let CFW  = "https://shelly-proxy.ash-b39.workers.dev";
+let MFIL = "manifest.json";
+let FCHK = 512;
+let PCHK = 512;
+let SLFI = Shelly.getCurrentScriptId();
 
 function lg(lv, ms) { print("[" + lv + "][UPD:" + SLFI + "] " + ms); }
 
@@ -107,8 +106,8 @@ function dpsc(sc, cb) {
 function cdal(sc, i, cb) {
   if (i>=sc.length) { cb(); return; }
   let s=sc[i]; i++;
-  // Skip entries with no file (kvs_restore) and supervisor (running, redeploys on next reboot)
-  if (!s.file||s.id===SUP_ID) { cdal(sc,i,cb); return; }
+  // Skip entries with no file (kvs_restore) or supervisor (running, takes effect on reboot)
+  if (!s.file||s.name==="supervisor") { cdal(sc,i,cb); return; }
 
   kget("s."+s.id+".ok",function(ok) {
     if (ok==="0") { dpsc(s,function(){cdal(sc,i,cb);}); return; }
@@ -143,6 +142,75 @@ function chkd(mf, cb) {
       scll("KVS.Set",{key:k,value:String(v)},function(){nx();});
     }
     nx();
+  });
+}
+
+// ================= PROVISIONING (first run only) =================
+function cdif(ds, ac) {
+  if (ac===null||ac===undefined) return true;
+  let ks=Object.keys(ds);
+  for (let i=0;i<ks.length;i++) {
+    let k=ks[i];
+    if (typeof ds[k]==="object"&&ds[k]!==null) { if (cdif(ds[k],ac[k])) return true; }
+    else { if (ds[k]!==ac[k]) return true; }
+  }
+  return false;
+}
+
+function prfx(cf, ckv, cb) {
+  let ks=Object.keys(cf); let i=0;
+  function nx() {
+    if (i>=ks.length) { cb(); return; }
+    let ky=ks[i]; let en=ckv?cf[ky]:null; i++;
+    let sm=ckv?en.method:ky; let ds=ckv?en.config:cf[ky].config;
+    function ap() {
+      let gm=sm.replace("SetConfig","GetConfig");
+      if (gm===sm) { scll(sm,{config:ds},function(r,e){if(e)lg("WARN","fail:"+sm);nx();}); return; }
+      scll(gm,{},function(r,e) {
+        if (!e&&r&&!cdif(ds,r)) {
+          if (ckv) scll("KVS.Set",{key:ky,value:JSON.stringify(ds)},function(){nx();}); else nx(); return;
+        }
+        scll(sm,{config:ds},function(r2,e2) {
+          if (e2) lg("WARN","fail:"+sm);
+          else if (r2&&r2.restart_required) lg("WARN",sm+" REBOOT");
+          else lg("INFO",sm+" ok");
+          if (ckv) scll("KVS.Set",{key:ky,value:JSON.stringify(ds)},function(){nx();}); else nx();
+        });
+      });
+    }
+    if (ckv) { scll("KVS.Get",{key:ky},function(r,e){if(!e&&r&&r.value!=="configured"){nx();return;} ap();}); }
+    else { ap(); }
+  }
+  nx();
+}
+
+function prvc(cp, cb) {
+  let i=0;
+  function nx() {
+    if (i>=cp.length) { cb(); return; }
+    let c=cp[i]; i++;
+    let gm=(c.type==="text")?"Text.GetConfig":"Number.GetConfig";
+    scll(gm,{id:c.id},function(r,e) {
+      if (!e&&r&&r.name===c.name) { nx(); return; }
+      if (!e&&r) {
+        scll((c.type==="text")?"Text.SetConfig":"Number.SetConfig",{id:c.id,config:{name:c.name}},function(){nx();}); return;
+      }
+      scll((c.type==="text")?"Text.Add":"Number.Add",{id:c.id,config:{name:c.name}},function(r2,e2) {
+        if (e2) lg("ERR","cre "+c.type+":"+c.id); else lg("INFO","cre "+c.type+":"+c.id); nx();
+      });
+    });
+  }
+  nx();
+}
+
+function prov(mf, cb) {
+  lg("INFO","provisioning device...");
+  prvc(mf.components||[], function() {
+    prfx(mf.config||{}, false, function() {
+      prfx(mf.kvsConfig||{}, true, function() {
+        kset("wd.pv","1",function(){ lg("INFO","prov complete"); cb(); });
+      });
+    });
   });
 }
 
@@ -216,19 +284,28 @@ Timer.set(1000, false, function() {
     if (!bd) { lg("ERR","manifest fail"); Shelly.call("Script.Stop",{id:SLFI},null); return; }
     let mf; try{mf=JSON.parse(bd);bd=null;}catch(e){lg("ERR","parse");Shelly.call("Script.Stop",{id:SLFI},null);return;}
 
-    cdal(mf.scripts||[], 0, function() {
-      chkd(mf, function() {
-        let kl=["wd.br","wd.pt","wd.pv","wd.kvd_ver","wd.last_upd","wd.tz_offset","wd.force_upd"];
-        let dk=Object.keys(mf.kvsDefaults||{});
-        let ck=Object.keys(mf.kvsConfig||{});
-        for (let j=0;j<dk.length;j++) kl.push(dk[j]);
-        for (let j=0;j<ck.length;j++) kl.push(ck[j]);
-        mf=null;
-        gkrs(kl, function() {
-          lg("INFO","update complete");
-          Shelly.call("Script.Stop",{id:SLFI},null);
-        });
+    function dvc() {
+      let kl=["wd.br","wd.pt","wd.pv","wd.kvd_ver","wd.last_upd","wd.tz_offset","wd.force_upd"];
+      let dk=Object.keys(mf.kvsDefaults||{});
+      let ck=Object.keys(mf.kvsConfig||{});
+      for (let j=0;j<dk.length;j++) kl.push(dk[j]);
+      for (let j=0;j<ck.length;j++) kl.push(ck[j]);
+      mf=null;
+      gkrs(kl, function() {
+        lg("INFO","update complete");
+        Shelly.call("Script.Stop",{id:SLFI},null);
       });
+    }
+
+    function afterProv() {
+      cdal(mf.scripts||[], 0, function() {
+        chkd(mf, function() { dvc(); });
+      });
+    }
+
+    kget("wd.pv", function(pv) {
+      if (pv==="1") { afterProv(); }
+      else { prov(mf, function() { afterProv(); }); }
     });
   });
 });

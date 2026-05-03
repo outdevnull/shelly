@@ -42,9 +42,9 @@
     { "type": "text",   "id": 200, "name": "moisture_trend" }
   ],
   "scripts": [
-    { "id": 1, "name": "bootstrap",     "file": "bootstrap.js",   "version": "2.1.0", "autostart": false },
-    { "id": 2, "name": "supervisor",    "file": "supervisor.js",   "version": "1.0.0", "autostart": true  },
-    { "id": 3, "name": "updater",       "file": "updater.js",      "version": "1.0.1", "autostart": false },
+    { "id": 1, "name": "bootstrap",     "file": "bootstrap.js",   "version": "3.0.0", "autostart": false },
+    { "id": 2, "name": "supervisor",    "file": "supervisor.js",   "version": "1.1.0", "autostart": true  },
+    { "id": 3, "name": "updater",       "file": "updater.js",      "version": "1.1.0", "autostart": false },
     { "id": 4, "name": "kvs_restore",                                                   "autostart": false },
     { "id": 5, "name": "fancontroller", "file": "fancontroller.js","version": "1.0.7", "autostart": false }
   ]

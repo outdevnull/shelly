@@ -1,7 +1,8 @@
-// version: 1.0.0
+// version: 1.1.0
 // === Shelly Supervisor - Fan Controller ===
-// Permanent. Starts managed scripts on boot, monitors health, triggers updates at 2am or on demand.
-// "Update now": set KVS key wd.force_upd=1 (e.g. POST /rpc/KVS.Set?key=wd.force_upd&value=1)
+// Permanent. Starts managed scripts on boot, monitors health, triggers updates.
+// Triggers updater immediately on first boot if fancontroller is not yet deployed.
+// "Update now": set KVS wd.force_upd=1 (e.g. POST /rpc/KVS.Set?key=wd.force_upd&value=1)
 
 let SLFI = Shelly.getCurrentScriptId();
 let FAN_ID = -1;
@@ -22,6 +23,22 @@ function drnQ() {
 }
 function kget(k, cb) { scll("KVS.Get",{key:k},function(r,e){cb((!e&&r)?r.value:null);}); }
 function kset(k, v, cb) { scll("KVS.Set",{key:k,value:String(v)},function(r,e){if(cb)cb(!e);}); }
+
+// ================= SCRIPT DISCOVERY =================
+function discoverScripts(cb) {
+  Shelly.call("Script.List",{},function(r,e) {
+    FAN_ID=-1; UPD_ID=-1;
+    if (!e&&r&&r.scripts) {
+      for (let i=0;i<r.scripts.length;i++) {
+        let s=r.scripts[i];
+        if (s.name==="fancontroller"||s.name==="bathroom-fan") FAN_ID=s.id;
+        if (s.name==="updater") UPD_ID=s.id;
+      }
+    }
+    lg("INFO","fan:"+FAN_ID+" upd:"+UPD_ID);
+    if (cb) cb();
+  });
+}
 
 // ================= FAN LIFECYCLE =================
 let updRunning = false;
@@ -82,7 +99,8 @@ function pollUpdater() {
       if (!e&&r&&r.running) { pollUpdater(); return; }
       lg("INFO","updater done");
       updRunning=false;
-      ensureFan(null);
+      // Re-discover in case new scripts were deployed, then start fan
+      discoverScripts(function() { ensureFan(null); });
     });
   });
 }
@@ -118,23 +136,23 @@ Timer.set(2000, false, function() {
   kget("wd.rpc_delay",function(rd){ if(rd!==null) rDly=(rd*1); });
   kget("wd.tz_offset",function(tz){ if(tz!==null) tzOffset=(tz*1); });
 
-  // Discover managed script IDs by name
-  Shelly.call("Script.List",{},function(r,e) {
-    if (!e&&r&&r.scripts) {
-      for (let i=0;i<r.scripts.length;i++) {
-        let s=r.scripts[i];
-        if (s.name==="fancontroller"||s.name==="bathroom-fan") FAN_ID=s.id;
-        if (s.name==="updater") UPD_ID=s.id;
-      }
-    }
-    lg("INFO","fan:"+FAN_ID+" upd:"+UPD_ID);
-
-    ensureFan(function() {
+  discoverScripts(function() {
+    if (FAN_ID<0) {
+      // Fancontroller not deployed yet -- trigger updater for full install
+      lg("INFO","fan not found, triggering install");
       kget("wd.health_interval",function(hi) {
         Timer.set((hi?(hi*1):300)*1000, true, function(){healthCheck();});
+        Timer.set(60000, true, function(){scheduleTick();});
       });
-      Timer.set(60000, true, function(){scheduleTick();});
-      lg("INFO","supervisor ready");
-    });
+      runUpdate();
+    } else {
+      ensureFan(function() {
+        kget("wd.health_interval",function(hi) {
+          Timer.set((hi?(hi*1):300)*1000, true, function(){healthCheck();});
+          Timer.set(60000, true, function(){scheduleTick();});
+          lg("INFO","supervisor ready");
+        });
+      });
+    }
   });
 });
