@@ -1,12 +1,12 @@
-// version: 1.0.0
+// version: 1.0.1
 // === Shelly Updater - Fan Controller ===
 // Started by supervisor. Checks versions, deploys changed scripts, updates KVS defaults,
 // regenerates kvs_restore. Supervisor manages fan start/stop around this. Stops self when done.
 
 let CFW    = "https://shelly-proxy.ash-b39.workers.dev";
 let MFIL   = "manifest.json";
-let FCHK   = 1024;
-let PCHK   = 1024;
+let FCHK   = 512;
+let PCHK   = 512;
 let SLFI   = Shelly.getCurrentScriptId();
 let SUP_ID = 2; // supervisor -- always skip, never redeploy while running
 
