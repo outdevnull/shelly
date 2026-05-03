@@ -1,20 +1,5 @@
 {
   "kvsDefaultsVersion": "3",
-  "config": {
-    "BLE.SetConfig": {
-      "config": {
-        "enable": false
-      }
-    }
-  },
-  "kvsConfig": {
-    "mqtt.enable":       { "method": "Mqtt.SetConfig", "config": { "enable": true } },
-    "mqtt.server":       { "method": "Mqtt.SetConfig", "config": { "server": "192.168.x.x:1883" } },
-    "mqtt.client_id":    { "method": "Mqtt.SetConfig", "config": { "client_id": "bathroom-fan" } },
-    "mqtt.topic_prefix": { "method": "Mqtt.SetConfig", "config": { "topic_prefix": "shelly/bathroom-fan" } },
-    "device.name":       { "method": "Sys.SetConfig",  "config": { "device": { "name": "Bathroom Fan Controller" } } },
-    "device.tz":         { "method": "Sys.SetConfig",  "config": { "location": { "tz": "Australia/Sydney" } } }
-  },
   "kvsDefaults": {
     "wd.health_interval":            300,
     "wd.rpc_delay":                  200,
@@ -34,18 +19,11 @@
     "fan.passive_drying_min":        1.25,
     "fan.passive_runtime":           600
   },
-  "components": [
-    { "type": "number", "id": 200, "name": "int_humidity" },
-    { "type": "number", "id": 201, "name": "int_temperature" },
-    { "type": "number", "id": 202, "name": "ext_humidity" },
-    { "type": "number", "id": 203, "name": "ext_temperature" },
-    { "type": "text",   "id": 200, "name": "moisture_trend" }
-  ],
   "scripts": [
-    { "id": 1, "name": "bootstrap",     "file": "bootstrap.js",   "version": "3.0.0", "autostart": false },
-    { "id": 2, "name": "supervisor",    "file": "supervisor.js",   "version": "1.1.0", "autostart": true  },
-    { "id": 3, "name": "updater",       "file": "updater.js",      "version": "1.1.0", "autostart": false },
-    { "id": 4, "name": "kvs_restore",                                                   "autostart": false },
-    { "id": 5, "name": "fancontroller", "file": "fancontroller.js","version": "1.0.7", "autostart": false }
+    { "id": 1, "name": "bootstrap",     "file": "bootstrap.js",    "version": "3.0.0", "autostart": false },
+    { "id": 2, "name": "supervisor",    "file": "supervisor.js",    "version": "1.1.0", "autostart": true  },
+    { "id": 3, "name": "updater",       "file": "updater.js",       "version": "1.2.0", "autostart": false },
+    { "id": 4, "name": "kvs_restore",                                                    "autostart": false },
+    { "id": 5, "name": "fancontroller", "file": "fancontroller.js", "version": "1.0.7", "autostart": false }
   ]
 }

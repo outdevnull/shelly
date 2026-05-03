@@ -1,10 +1,13 @@
-// version: 1.1.0
+// version: 1.2.0
 // === Shelly Updater - Fan Controller ===
-// Started by supervisor. Provisions device on first run (wd.pv not set), checks script
-// versions, deploys changes, updates KVS defaults, regenerates kvs_restore. Stops self.
+// Started by supervisor. On first run (wd.pv not set) fetches provision.json for device
+// setup. Always fetches manifest.json (scripts + kvsDefaults only) for version checks,
+// script deploy, and KVS defaults update. Regenerates kvs_restore. Stops self.
+// manifest.json is kept small (<900 bytes) to avoid OOM during string assembly + JSON parse.
 
 let CFW  = "https://shelly-proxy.ash-b39.workers.dev";
 let MFIL = "manifest.json";
+let PFIL = "provision.json";
 let FCHK = 512;
 let PCHK = 512;
 let SLFI = Shelly.getCurrentScriptId();
@@ -25,7 +28,7 @@ function drnQ() {
 function kget(k, cb) { scll("KVS.Get",{key:k},function(r,e){cb((!e&&r)?r.value:null);}); }
 function kset(k, v, cb) { scll("KVS.Set",{key:k,value:String(v)},function(r,e){if(cb)cb(!e);}); }
 
-// ================= FETCH MANIFEST =================
+// ================= FETCH FILE =================
 function fgsm(fi, cb) {
   let asm=""; let off=0; let br=""; let pt="";
   function go() {
@@ -106,7 +109,6 @@ function dpsc(sc, cb) {
 function cdal(sc, i, cb) {
   if (i>=sc.length) { cb(); return; }
   let s=sc[i]; i++;
-  // Skip entries with no file (kvs_restore) or supervisor (running, takes effect on reboot)
   if (!s.file||s.name==="supervisor") { cdal(sc,i,cb); return; }
 
   kget("s."+s.id+".ok",function(ok) {
@@ -203,11 +205,11 @@ function prvc(cp, cb) {
   nx();
 }
 
-function prov(mf, cb) {
+function prov(pr, cb) {
   lg("INFO","provisioning device...");
-  prvc(mf.components||[], function() {
-    prfx(mf.config||{}, false, function() {
-      prfx(mf.kvsConfig||{}, true, function() {
+  prvc(pr.components||[], function() {
+    prfx(pr.config||{}, false, function() {
+      prfx(pr.kvsConfig||{}, true, function() {
         kset("wd.pv","1",function(){ lg("INFO","prov complete"); cb(); });
       });
     });
@@ -285,11 +287,11 @@ Timer.set(1000, false, function() {
     let mf; try{mf=JSON.parse(bd);bd=null;}catch(e){lg("ERR","parse");Shelly.call("Script.Stop",{id:SLFI},null);return;}
 
     function dvc() {
-      let kl=["wd.br","wd.pt","wd.pv","wd.kvd_ver","wd.last_upd","wd.tz_offset","wd.force_upd"];
+      // kvsConfig keys hardcoded — provision.json not needed at dvc() time
+      let kl=["wd.br","wd.pt","wd.pv","wd.kvd_ver","wd.last_upd","wd.tz_offset","wd.force_upd",
+              "mqtt.enable","mqtt.server","mqtt.client_id","mqtt.topic_prefix","device.name","device.tz"];
       let dk=Object.keys(mf.kvsDefaults||{});
-      let ck=Object.keys(mf.kvsConfig||{});
       for (let j=0;j<dk.length;j++) kl.push(dk[j]);
-      for (let j=0;j<ck.length;j++) kl.push(ck[j]);
       mf=null;
       gkrs(kl, function() {
         lg("INFO","update complete");
@@ -298,14 +300,29 @@ Timer.set(1000, false, function() {
     }
 
     function afterProv() {
-      cdal(mf.scripts||[], 0, function() {
+      let scripts=mf.scripts||[]; mf.scripts=null;
+      cdal(scripts, 0, function() {
+        scripts=null;
         chkd(mf, function() { dvc(); });
       });
     }
 
     kget("wd.pv", function(pv) {
-      if (pv==="1") { afterProv(); }
-      else { prov(mf, function() { afterProv(); }); }
+      if (pv==="1") {
+        afterProv();
+      } else {
+        // Fetch provision.json separately — keeps manifest.json small for normal update runs
+        fgsm(PFIL, function(pb) {
+          let pr=null;
+          if (pb) { try{pr=JSON.parse(pb);}catch(e){} pb=null; }
+          if (pr) {
+            prov(pr, function() { pr=null; afterProv(); });
+          } else {
+            lg("WARN","provision.json fail, skipping prov");
+            afterProv();
+          }
+        });
+      }
     });
   });
 });

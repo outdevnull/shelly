@@ -1,0 +1,24 @@
+{
+  "config": {
+    "BLE.SetConfig": {
+      "config": {
+        "enable": false
+      }
+    }
+  },
+  "kvsConfig": {
+    "mqtt.enable":       { "method": "Mqtt.SetConfig", "config": { "enable": true } },
+    "mqtt.server":       { "method": "Mqtt.SetConfig", "config": { "server": "192.168.x.x:1883" } },
+    "mqtt.client_id":    { "method": "Mqtt.SetConfig", "config": { "client_id": "bathroom-fan" } },
+    "mqtt.topic_prefix": { "method": "Mqtt.SetConfig", "config": { "topic_prefix": "shelly/bathroom-fan" } },
+    "device.name":       { "method": "Sys.SetConfig",  "config": { "device": { "name": "Bathroom Fan Controller" } } },
+    "device.tz":         { "method": "Sys.SetConfig",  "config": { "location": { "tz": "Australia/Sydney" } } }
+  },
+  "components": [
+    { "type": "number", "id": 200, "name": "int_humidity" },
+    { "type": "number", "id": 201, "name": "int_temperature" },
+    { "type": "number", "id": 202, "name": "ext_humidity" },
+    { "type": "number", "id": 203, "name": "ext_temperature" },
+    { "type": "text",   "id": 200, "name": "moisture_trend" }
+  ]
+}
