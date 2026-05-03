@@ -1,11 +1,11 @@
-// version: 2.0.0
+// version: 2.1.0
 // === Shelly Bootstrap - Fan Controller ===
 // User-started only. Fetches manifest, deploys all scripts, provisions device, force-writes KVS defaults.
 
 let CFW  = "https://shelly-proxy.ash-b39.workers.dev";
 let MFIL = "manifest.json";
-let FCHK = 2048;
-let PCHK = 1024;
+let FCHK = 512;
+let PCHK = 512;
 let SLFI = Shelly.getCurrentScriptId();
 
 function lg(lv, ms) { print("[" + lv + "][BS:" + SLFI + "] " + ms); }
@@ -167,6 +167,22 @@ function wkd(mf, cb) {
 Timer.set(2000, false, function() {
   lg("INFO","bootstrap start");
 
+  // Stop all running scripts except self before any heavy work -- frees heap
+  function stopRunning(cb) {
+    Shelly.call("Script.List",{},function(r,e) {
+      if (e||!r||!r.scripts) { cb(); return; }
+      let i=0;
+      function nx() {
+        if (i>=r.scripts.length) { cb(); return; }
+        let s=r.scripts[i]; i++;
+        if (s.id===SLFI||!s.running) { nx(); return; }
+        lg("INFO","stopping:"+s.name+"("+s.id+")");
+        Shelly.call("Script.Stop",{id:s.id},function(){nx();});
+      }
+      nx();
+    });
+  }
+
   function ensureKvs(cb) {
     kget("wd.br",function(br) {
       if (!br) { kset("wd.br","main",function(){ lg("INFO","set wd.br=main"); ensureKvs(cb); }); return; }
@@ -182,6 +198,7 @@ Timer.set(2000, false, function() {
     Shelly.call("Script.Stop",{id:SLFI},null);
   }
 
+  stopRunning(function() {
   ensureKvs(function() {
     lg("INFO","fetching manifest...");
     fgsm(MFIL, function(bd) {
@@ -211,5 +228,6 @@ Timer.set(2000, false, function() {
         });
       });
     });
-  });
+  }); // ensureKvs
+  }); // stopRunning
 });
