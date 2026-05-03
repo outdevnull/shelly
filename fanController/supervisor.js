@@ -1,7 +1,8 @@
-// version: 1.1.0
+// version: 1.2.0
 // === Shelly Supervisor - Fan Controller ===
 // Permanent. Starts managed scripts on boot, monitors health, triggers updates.
 // Triggers updater immediately on first boot if fancontroller is not yet deployed.
+// Retries update up to 3 times if fancontroller still missing after updater finishes.
 // "Update now": set KVS wd.force_upd=1 (e.g. POST /rpc/KVS.Set?key=wd.force_upd&value=1)
 
 let SLFI = Shelly.getCurrentScriptId();
@@ -69,6 +70,7 @@ function healthCheck() {
 }
 
 // ================= UPDATE CYCLE =================
+let installAttempt = 0;
 function runUpdate() {
   if (updRunning) { lg("INFO","upd already running"); return; }
   if (UPD_ID<0) { lg("WARN","no updater found"); return; }
@@ -99,8 +101,16 @@ function pollUpdater() {
       if (!e&&r&&r.running) { pollUpdater(); return; }
       lg("INFO","updater done");
       updRunning=false;
-      // Re-discover in case new scripts were deployed, then start fan
-      discoverScripts(function() { ensureFan(null); });
+      discoverScripts(function() {
+        if (FAN_ID<0 && installAttempt<3) {
+          installAttempt++;
+          lg("WARN","fan missing after update, retry "+installAttempt+"/3");
+          Timer.set(5000, false, function(){ runUpdate(); });
+        } else {
+          installAttempt=0;
+          ensureFan(null);
+        }
+      });
     });
   });
 }
