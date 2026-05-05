@@ -1,168 +1,79 @@
-// version: 1.2.0
-// === Shelly Supervisor - Fan Controller ===
-// Permanent. Starts managed scripts on boot, monitors health, triggers updates.
-// Triggers updater immediately on first boot if fancontroller is not yet deployed.
-// Retries update up to 3 times if fancontroller still missing after updater finishes.
-// "Update now": set KVS wd.force_upd=1 (e.g. POST /rpc/KVS.Set?key=wd.force_upd&value=1)
+// version: 2.0.0
+// Supervisor — boot, health, update scheduling. Minimal heap footprint.
+// Removed RPC queue to reduce jsvar AST usage; direct Shelly.call throughout.
+// Health check: sfan() every 300s (hardcoded). 2am daily update + wd.force_upd trigger.
 
-let SLFI = Shelly.getCurrentScriptId();
-let FAN_ID = -1;
-let UPD_ID = -1;
+let F=-1, U=-1, upd=false, ret=0, ldx=-1, tz=36000;
+function p(m) { print("[SUP] "+m); }
+function kg(k,cb) { Shelly.call("KVS.Get",{key:k},function(r,e){cb((!e&&r)?r.value:null);}); }
+function ks(k,v,cb) { Shelly.call("KVS.Set",{key:k,value:String(v)},function(r,e){if(cb)cb();}); }
 
-function lg(lv, ms) { print("[" + lv + "][SUP:" + SLFI + "] " + ms); }
-
-// ================= RPC QUEUE =================
-let rpcQ=[]; let rpcH=0; let rpcB=false; let rDly=200;
-function scll(m, p, cb) { rpcQ.push({m:m, p:p, cb:cb}); drnQ(); }
-function drnQ() {
-  if (rpcB||rpcH>=rpcQ.length) return;
-  rpcB=true; let it=rpcQ[rpcH]; rpcH++;
-  if (rpcH>20) { let q=[]; for(let j=rpcH;j<rpcQ.length;j++) q.push(rpcQ[j]); rpcQ=q; rpcH=0; }
-  Timer.set(rDly, false, function() {
-    Shelly.call(it.m, it.p, function(r,e){rpcB=false; if(it.cb)it.cb(r,e); drnQ();});
-  });
-}
-function kget(k, cb) { scll("KVS.Get",{key:k},function(r,e){cb((!e&&r)?r.value:null);}); }
-function kset(k, v, cb) { scll("KVS.Set",{key:k,value:String(v)},function(r,e){if(cb)cb(!e);}); }
-
-// ================= SCRIPT DISCOVERY =================
-function discoverScripts(cb) {
+function disc(cb) {
   Shelly.call("Script.List",{},function(r,e) {
-    FAN_ID=-1; UPD_ID=-1;
-    if (!e&&r&&r.scripts) {
-      for (let i=0;i<r.scripts.length;i++) {
-        let s=r.scripts[i];
-        if (s.name==="fancontroller"||s.name==="bathroom-fan") FAN_ID=s.id;
-        if (s.name==="updater") UPD_ID=s.id;
-      }
+    F=-1; U=-1;
+    if (!e&&r&&r.scripts) for (let i=0;i<r.scripts.length;i++) {
+      let s=r.scripts[i];
+      if (s.name==="fancontroller") F=s.id;
+      if (s.name==="updater") U=s.id;
     }
-    lg("INFO","fan:"+FAN_ID+" upd:"+UPD_ID);
-    if (cb) cb();
+    p("F:"+F+" U:"+U); if (cb) cb();
   });
 }
 
-// ================= FAN LIFECYCLE =================
-let updRunning = false;
-let fanFailCount = 0;
+function sfan() {
+  if (F<0||upd) return;
+  Shelly.call("Script.GetStatus",{id:F},function(r,e) {
+    if (!e&&r&&r.running) return;
+    p("restart fan"); Shelly.call("Script.Start",{id:F},null);
+  });
+}
 
-function ensureFan(cb) {
-  if (FAN_ID<0||updRunning) { if(cb)cb(); return; }
-  scll("Script.GetStatus",{id:FAN_ID},function(r,e) {
-    if (!e&&r&&r.running) { if(cb)cb(); return; }
-    lg("INFO","starting fan:"+FAN_ID);
-    scll("Script.Start",{id:FAN_ID},function(r2,e2) {
-      if (e2) lg("ERR","fan start fail"); else lg("INFO","fan started");
-      if (cb) cb();
+function poll() {
+  Timer.set(10000,false,function() {
+    Shelly.call("Script.GetStatus",{id:U},function(r,e) {
+      if (!e&&r&&r.running) { poll(); return; }
+      p("upd done"); upd=false;
+      disc(function() {
+        if (F<0&&ret<3) { ret++; p("retry "+ret); Timer.set(5000,false,go); }
+        else { ret=0; sfan(); }
+      });
     });
   });
 }
 
-// ================= HEALTH CHECK =================
-function healthCheck() {
-  if (FAN_ID<0||updRunning) return;
-  scll("Script.GetStatus",{id:FAN_ID},function(r,e) {
-    if (!e&&r&&r.running) { fanFailCount=0; return; }
-    fanFailCount++;
-    lg("WARN","fan not running "+fanFailCount+"/3");
-    if (fanFailCount>=3) { lg("WARN","fan fail3 restart"); fanFailCount=0; }
-    scll("Script.Start",{id:FAN_ID},null);
-  });
-}
-
-// ================= UPDATE CYCLE =================
-let installAttempt = 0;
-function runUpdate() {
-  if (updRunning) { lg("INFO","upd already running"); return; }
-  if (UPD_ID<0) { lg("WARN","no updater found"); return; }
-  updRunning=true;
-  lg("INFO","update cycle start");
-
-  function startUpdater() {
-    scll("Script.Start",{id:UPD_ID},function(r,e) {
-      if (e) { lg("ERR","updater start fail"); updRunning=false; ensureFan(null); return; }
-      lg("INFO","updater started");
-      pollUpdater();
+function go() {
+  if (upd||U<0) return;
+  upd=true; p("update");
+  function st() {
+    Shelly.call("Script.Start",{id:U},function(r,e) {
+      if (e) { p("upd err"); upd=false; sfan(); return; }
+      poll();
     });
   }
-
-  if (FAN_ID>=0) {
-    scll("Script.Stop",{id:FAN_ID},function() {
-      lg("INFO","fan stopped for update");
-      startUpdater();
-    });
-  } else {
-    startUpdater();
-  }
+  if (F>=0) Shelly.call("Script.Stop",{id:F},function(){st();}); else st();
 }
 
-function pollUpdater() {
-  Timer.set(10000, false, function() {
-    scll("Script.GetStatus",{id:UPD_ID},function(r,e) {
-      if (!e&&r&&r.running) { pollUpdater(); return; }
-      lg("INFO","updater done");
-      updRunning=false;
-      discoverScripts(function() {
-        if (FAN_ID<0 && installAttempt<3) {
-          installAttempt++;
-          lg("WARN","fan missing after update, retry "+installAttempt+"/3");
-          Timer.set(5000, false, function(){ runUpdate(); });
-        } else {
-          installAttempt=0;
-          ensureFan(null);
-        }
-      });
-    });
-  });
-}
-
-// ================= SCHEDULING =================
-let lastUpdDay = -1;
-let tzOffset = 36000;
-
-function scheduleTick() {
-  let now = Shelly.getComponentStatus("sys").unixtime;
-  let localHour = Math.floor(((now+tzOffset)%86400)/3600);
-  let today = Math.floor((now+tzOffset)/86400);
-
-  kget("wd.force_upd",function(fu) {
-    if (fu==="1") {
-      kset("wd.force_upd","0",function() { lg("INFO","force update triggered"); runUpdate(); });
-      return;
-    }
-    if (localHour===2&&today!==lastUpdDay) {
-      kget("wd.last_upd",function(lu) {
-        if (String(lu)===String(today)) { lastUpdDay=today; return; }
-        lastUpdDay=today;
-        kset("wd.last_upd",String(today),function() { lg("INFO","2am update"); runUpdate(); });
+function tick() {
+  kg("wd.force_upd",function(fu) {
+    if (fu==="1") { ks("wd.force_upd","0",function(){go();}); return; }
+    let now=Shelly.getComponentStatus("sys").unixtime;
+    let hr=Math.floor(((now+tz)%86400)/3600), day=Math.floor((now+tz)/86400);
+    if (hr===2&&day!==ldx) {
+      ldx=day;
+      kg("wd.last_upd",function(lu) {
+        if (String(lu)===String(day)) return;
+        ks("wd.last_upd",String(day),function() { p("2am"); go(); });
       });
     }
   });
 }
 
-// ================= BOOT =================
-Timer.set(2000, false, function() {
-  lg("INFO","supervisor boot");
-
-  kget("wd.rpc_delay",function(rd){ if(rd!==null) rDly=(rd*1); });
-  kget("wd.tz_offset",function(tz){ if(tz!==null) tzOffset=(tz*1); });
-
-  discoverScripts(function() {
-    if (FAN_ID<0) {
-      // Fancontroller not deployed yet -- trigger updater for full install
-      lg("INFO","fan not found, triggering install");
-      kget("wd.health_interval",function(hi) {
-        Timer.set((hi?(hi*1):300)*1000, true, function(){healthCheck();});
-        Timer.set(60000, true, function(){scheduleTick();});
-      });
-      runUpdate();
-    } else {
-      ensureFan(function() {
-        kget("wd.health_interval",function(hi) {
-          Timer.set((hi?(hi*1):300)*1000, true, function(){healthCheck();});
-          Timer.set(60000, true, function(){scheduleTick();});
-          lg("INFO","supervisor ready");
-        });
-      });
-    }
+Timer.set(2000,false,function() {
+  p("boot");
+  kg("wd.tz_offset",function(t) { if (t!==null) tz=t*1; });
+  disc(function() {
+    Timer.set(300000,true,sfan);
+    Timer.set(60000,true,tick);
+    if (F<0) { p("install"); go(); } else sfan();
   });
 });
