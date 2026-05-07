@@ -1,4 +1,4 @@
-// version: 3.1.0
+// version: 3.2.0
 // User-started only. Provisions device on first run (wd.pv != "1"), then deploys
 // supervisor + updater. Supervisor triggers updater on first boot for full script deploy.
 
@@ -114,7 +114,7 @@ function deployScript(name, file, autostart, cb) {
     function deploy(id) {
       gfad(file, id, function(ok) {
         if (!ok) { lg("deploy fail:"+name); cb(-1); return; }
-        Shelly.call("Script.SetConfig",{id:id,config:{enable:autostart}},null);
+        Shelly.call("Script.SetConfig",{id:id,config:{name:name,enable:autostart}},null);
         lg("deployed:"+name+":"+id);
         cb(id);
       });
