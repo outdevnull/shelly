@@ -1,8 +1,7 @@
-// version: 1.7.0
-// Always redeploys all scripts (no version check) — avoids large lazy-parse callback.
-// Runs chkd before cdal so mf is freed before scripts array exists.
-// Skips self (SLFI) and scripts without a file.
-// gfad writes HTTP chunks directly via PutCode — no slice() copy needed.
+// version: 1.8.0
+// Looks up scripts by name (not manifest id) before deploying.
+// Sets name in SetConfig so slots are always correctly identified.
+// Chkd before cdal so mf freed before sc; no slice() in gfad.
 
 let CFW ="https://shelly-proxy.ash-b39.workers.dev";
 let SLFI=Shelly.getCurrentScriptId();
@@ -41,30 +40,34 @@ function gfad(fi,sid,cb){
   kget("wd.br",function(b){br=b;kget("wd.pt",function(p){pt=p;dftc();});});
 }
 
-function dpsc(sc,cb){
-  Shelly.call("Script.GetStatus",{id:sc.id},function(r,e){
-    function dwr(){
-      gfad(sc.file,sc.id,function(ok){
-        Shelly.call("Script.SetConfig",{id:sc.id,config:{enable:sc.autostart}},null);
-        cb(ok);
-      });
-    }
-    if(e||!r){
-      Shelly.call("Script.Create",{name:sc.name},function(r2,e2){
-        if(e2){cb(false);return;}
-        sc.id=r2.id;dwr();
-      });
-    }else{
-      if(r.running)Shelly.call("Script.Stop",{id:sc.id},function(){dwr();});else dwr();
-    }
-  });
+function dpsc(sc,did,cb){
+  function dwr(id){
+    gfad(sc.file,id,function(ok){
+      Shelly.call("Script.SetConfig",{id:id,config:{name:sc.name,enable:sc.autostart}},null);
+      cb(ok);
+    });
+  }
+  if(did!==null){
+    Shelly.call("Script.GetStatus",{id:did},function(r,e){
+      if(!e&&r&&r.running)Shelly.call("Script.Stop",{id:did},function(){dwr(did);});
+      else dwr(did);
+    });
+  }else{
+    Shelly.call("Script.Create",{name:sc.name},function(r2,e2){
+      if(e2){cb(false);return;}
+      dwr(r2.id);
+    });
+  }
 }
 
-function cdal(sc,i,cb){
+function cdal(sc,i,sl,cb){
   if(i>=sc.length){cb();return;}
   let s=sc[i];i++;
-  if(!s.file||s.id===SLFI){cdal(sc,i,cb);return;}
-  dpsc(s,function(){cdal(sc,i,cb);});
+  if(!s.file){cdal(sc,i,sl,cb);return;}
+  let did=null;
+  for(let j=0;j<sl.length;j++){if(sl[j].name===s.name){did=sl[j].id;break;}}
+  if(did===SLFI){cdal(sc,i,sl,cb);return;}
+  dpsc(s,did,function(){cdal(sc,i,sl,cb);});
 }
 
 function chkd(mf,cb){
@@ -87,12 +90,13 @@ Timer.set(1000,false,function(){
     let mf;try{mf=JSON.parse(bd);bd=null;}catch(ex){Shelly.call("Script.Stop",{id:SLFI},null);return;}
     chkd(mf,function(){
       let sc=mf.scripts||[];mf=null;
-      cdal(sc,0,function(){
-        sc=null;
-        Shelly.call("Script.List",{},function(r,e){
-          if(!e&&r&&r.scripts)for(let i=0;i<r.scripts.length;i++){
-            if(r.scripts[i].name==="supervisor"){Shelly.call("Script.Start",{id:r.scripts[i].id},null);break;}
-          }
+      Shelly.call("Script.List",{},function(rl,el){
+        let sl=(!el&&rl&&rl.scripts)?rl.scripts:[];rl=null;
+        let supId=null;
+        for(let j=0;j<sl.length;j++){if(sl[j].name==="supervisor"){supId=sl[j].id;break;}}
+        cdal(sc,0,sl,function(){
+          sc=null;sl=null;
+          if(supId)Shelly.call("Script.Start",{id:supId},null);
           Shelly.call("Script.Stop",{id:SLFI},null);
         });
       });
