@@ -1,9 +1,8 @@
-// version: 1.3.0
-// === Shelly Updater - Fan Controller ===
-// Started by supervisor (which stops itself first to yield the heap).
-// On first run (wd.pv not set) fetches provision.json. Always fetches manifest.json for
-// version checks, script deploy, KVS defaults update, kvs_restore. When done, restarts
-// supervisor by name then stops self. Supervisor can be updated (no longer skipped in cdal).
+// version: 1.4.0
+// Shelly Updater — Fan Controller
+// Started by supervisor (which stops itself first to yield heap).
+// On first run fetches provision.json. Always fetches manifest.json for
+// version checks, script deploy, KVS defaults. When done, restarts supervisor then stops self.
 
 let CFW  = "https://shelly-proxy.ash-b39.workers.dev";
 let MFIL = "manifest.json";
@@ -13,20 +12,8 @@ let PCHK = 512;
 let SLFI = Shelly.getCurrentScriptId();
 
 function lg(lv, ms) { print("[" + lv + "][UPD:" + SLFI + "] " + ms); }
-
-// ================= RPC QUEUE =================
-let rpcQ=[]; let rpcH=0; let rpcB=false; let rDly=200;
-function scll(m, p, cb) { rpcQ.push({m:m, p:p, cb:cb}); drnQ(); }
-function drnQ() {
-  if (rpcB||rpcH>=rpcQ.length) return;
-  rpcB=true; let it=rpcQ[rpcH]; rpcH++;
-  if (rpcH>20) { let q=[]; for(let j=rpcH;j<rpcQ.length;j++) q.push(rpcQ[j]); rpcQ=q; rpcH=0; }
-  Timer.set(rDly, false, function() {
-    Shelly.call(it.m, it.p, function(r,e){rpcB=false; if(it.cb)it.cb(r,e); drnQ();});
-  });
-}
-function kget(k, cb) { scll("KVS.Get",{key:k},function(r,e){cb((!e&&r)?r.value:null);}); }
-function kset(k, v, cb) { scll("KVS.Set",{key:k,value:String(v)},function(r,e){if(cb)cb(!e);}); }
+function kget(k, cb) { Shelly.call("KVS.Get",{key:k},function(r,e){cb((!e&&r)?r.value:null);}); }
+function kset(k, v, cb) { Shelly.call("KVS.Set",{key:k,value:String(v)},function(r,e){if(cb)cb(!e);}); }
 
 // ================= FETCH FILE =================
 function fgsm(fi, cb) {
@@ -51,7 +38,7 @@ function exvr(cd) {
   return fl.slice(ix+mk.length).trim();
 }
 function gdvr(sid, cb) {
-  scll("Script.GetCode",{id:sid,offset:0,len:20},function(r,e){cb((!e&&r)?exvr(r.data):null);});
+  Shelly.call("Script.GetCode",{id:sid,offset:0,len:20},function(r,e){cb((!e&&r)?exvr(r.data):null);});
 }
 
 // ================= FETCH + DEPLOY =================
@@ -81,24 +68,24 @@ function gfad(fi, sid, cb) {
 // ================= DEPLOY SCRIPT =================
 function dpsc(sc, cb) {
   kset("s."+sc.id+".ok","0",function() {
-    scll("Script.GetStatus",{id:sc.id},function(r,e) {
+    Shelly.call("Script.GetStatus",{id:sc.id},function(r,e) {
       function dwr() {
         gfad(sc.file, sc.id, function(ok) {
           if (!ok) { lg("ERR","deploy:"+sc.name); cb(false); return; }
           kset("s."+sc.id+".ok","1",function() {
             lg("INFO","deployed:"+sc.name+" id:"+sc.id);
-            scll("Script.SetConfig",{id:sc.id,config:{enable:sc.autostart}},null);
+            Shelly.call("Script.SetConfig",{id:sc.id,config:{enable:sc.autostart}},null);
             cb(true);
           });
         });
       }
       if (e||!r) {
-        scll("Script.Create",{name:sc.name},function(r2,e2) {
+        Shelly.call("Script.Create",{name:sc.name},function(r2,e2) {
           if (e2) { lg("ERR","create:"+sc.name); cb(false); return; }
           sc.id=r2.id; lg("INFO","new slot:"+sc.id+":"+sc.name); dwr();
         });
       } else {
-        if (r.running) { scll("Script.Stop",{id:sc.id},function(){dwr();}); }
+        if (r.running) { Shelly.call("Script.Stop",{id:sc.id},function(){dwr();}); }
         else { dwr(); }
       }
     });
@@ -120,7 +107,7 @@ function cdal(sc, i, cb) {
         gdvr(s.id,function(lv) {
           lg("INFO",s.name+" l:"+lv+" r:"+rv);
           if (lv===rv) {
-            scll("Script.SetConfig",{id:s.id,config:{enable:s.autostart}},null);
+            Shelly.call("Script.SetConfig",{id:s.id,config:{enable:s.autostart}},null);
             cdal(sc,i,cb);
           } else {
             dpsc(s,function(){cdal(sc,i,cb);});
@@ -141,7 +128,7 @@ function chkd(mf, cb) {
     function nx() {
       if (i>=ks.length) { kset("wd.kvd_ver",dv,function(){cb();}); return; }
       let k=ks[i]; let v=mf.kvsDefaults[k]; i++;
-      scll("KVS.Set",{key:k,value:String(v)},function(){nx();});
+      Shelly.call("KVS.Set",{key:k,value:String(v)},function(){nx();});
     }
     nx();
   });
@@ -167,20 +154,20 @@ function prfx(cf, ckv, cb) {
     let sm=ckv?en.method:ky; let ds=ckv?en.config:cf[ky].config;
     function ap() {
       let gm=sm.replace("SetConfig","GetConfig");
-      if (gm===sm) { scll(sm,{config:ds},function(r,e){if(e)lg("WARN","fail:"+sm);nx();}); return; }
-      scll(gm,{},function(r,e) {
+      if (gm===sm) { Shelly.call(sm,{config:ds},function(r,e){if(e)lg("WARN","fail:"+sm);nx();}); return; }
+      Shelly.call(gm,{},function(r,e) {
         if (!e&&r&&!cdif(ds,r)) {
-          if (ckv) scll("KVS.Set",{key:ky,value:JSON.stringify(ds)},function(){nx();}); else nx(); return;
+          if (ckv) Shelly.call("KVS.Set",{key:ky,value:JSON.stringify(ds)},function(){nx();}); else nx(); return;
         }
-        scll(sm,{config:ds},function(r2,e2) {
+        Shelly.call(sm,{config:ds},function(r2,e2) {
           if (e2) lg("WARN","fail:"+sm);
           else if (r2&&r2.restart_required) lg("WARN",sm+" REBOOT");
           else lg("INFO",sm+" ok");
-          if (ckv) scll("KVS.Set",{key:ky,value:JSON.stringify(ds)},function(){nx();}); else nx();
+          if (ckv) Shelly.call("KVS.Set",{key:ky,value:JSON.stringify(ds)},function(){nx();}); else nx();
         });
       });
     }
-    if (ckv) { scll("KVS.Get",{key:ky},function(r,e){if(!e&&r&&r.value!=="configured"){nx();return;} ap();}); }
+    if (ckv) { Shelly.call("KVS.Get",{key:ky},function(r,e){if(!e&&r&&r.value!=="configured"){nx();return;} ap();}); }
     else { ap(); }
   }
   nx();
@@ -192,12 +179,12 @@ function prvc(cp, cb) {
     if (i>=cp.length) { cb(); return; }
     let c=cp[i]; i++;
     let gm=(c.type==="text")?"Text.GetConfig":"Number.GetConfig";
-    scll(gm,{id:c.id},function(r,e) {
+    Shelly.call(gm,{id:c.id},function(r,e) {
       if (!e&&r&&r.name===c.name) { nx(); return; }
       if (!e&&r) {
-        scll((c.type==="text")?"Text.SetConfig":"Number.SetConfig",{id:c.id,config:{name:c.name}},function(){nx();}); return;
+        Shelly.call((c.type==="text")?"Text.SetConfig":"Number.SetConfig",{id:c.id,config:{name:c.name}},function(){nx();}); return;
       }
-      scll((c.type==="text")?"Text.Add":"Number.Add",{id:c.id,config:{name:c.name}},function(r2,e2) {
+      Shelly.call((c.type==="text")?"Text.Add":"Number.Add",{id:c.id,config:{name:c.name}},function(r2,e2) {
         if (e2) lg("ERR","cre "+c.type+":"+c.id); else lg("INFO","cre "+c.type+":"+c.id); nx();
       });
     });
@@ -216,95 +203,25 @@ function prov(pr, cb) {
   });
 }
 
-// ================= KVS RESTORE =================
-function gkrs(kl, cb) {
-  Shelly.call("Script.List",{},function(r,e) {
-    let sid=null;
-    if (!e&&r&&r.scripts) {
-      for (let i=0;i<r.scripts.length;i++) {
-        if (r.scripts[i].name==="kvs_restore") { sid=r.scripts[i].id; break; }
-      }
-    }
-    function gotSlot(id) {
-      function writeHdr() {
-        let hdr="// kvs_restore auto-generated\nlet keys = [];\n";
-        Shelly.call("Script.PutCode",{id:id,code:hdr,append:false},function(r,e) {
-          hdr=null;
-          if (e) { lg("ERR","kvs_restore hdr"); cb(); return; }
-          writeKeys(0);
-        });
-      }
-      function writeKeys(ki) {
-        if (ki>=kl.length) { writeFtr(); return; }
-        let k=kl[ki];
-        Shelly.call("KVS.Get",{key:k},function(rk,ek) {
-          if (ek||!rk) { writeKeys(ki+1); return; }
-          let v=String(rk.value).split("\\").join("\\\\").split('"').join('\\"').split("\n").join("\\n");
-          let line='keys.push(["'+k+'","'+v+'"]);\n';
-          Shelly.call("Script.PutCode",{id:id,code:line,append:true},function(r2,e2) {
-            line=null;
-            if (e2) { lg("ERR","kvs_restore line"); cb(); return; }
-            Timer.set(0,false,function(){writeKeys(ki+1);});
-          });
-        });
-      }
-      function writeFtr() {
-        let ftr = "let i = 0;\nfunction nx() {\n" +
-          "  if (i >= keys.length) { print(\"kvs_restore done\"); Shelly.call(\"Script.Stop\", { id: Shelly.getCurrentScriptId() }, null); return; }\n" +
-          "  let k = keys[i][0]; let v = keys[i][1]; i++;\n" +
-          "  Shelly.call(\"KVS.Set\", { key: k, value: v }, function() { nx(); });\n" +
-          "}\nnx();";
-        Shelly.call("Script.PutCode",{id:id,code:ftr,append:true},function(r,e) {
-          ftr=null;
-          if (e) { lg("ERR","kvs_restore ftr"); cb(); return; }
-          Shelly.call("Script.SetConfig",{id:id,config:{enable:false}},null);
-          lg("INFO","kvs_restore deployed id:"+id); cb();
-        });
-      }
-      Shelly.call("Script.GetStatus",{id:id},function(rs,es) {
-        if (!es&&rs&&rs.running) { Shelly.call("Script.Stop",{id:id},function(){writeHdr();}); }
-        else { writeHdr(); }
-      });
-    }
-    if (sid===null) {
-      Shelly.call("Script.Create",{name:"kvs_restore"},function(rc,ec) {
-        if (ec||!rc) { lg("ERR","kvs_restore create"); cb(); return; }
-        lg("INFO","kvs_restore created:"+rc.id); gotSlot(rc.id);
-      });
-    } else {
-      gotSlot(sid);
-    }
-  });
-}
-
 // ================= MAIN =================
 Timer.set(1000, false, function() {
   lg("INFO","updater start");
-  kget("wd.rpc_delay",function(rd){ if(rd!==null) rDly=(rd*1); });
 
   fgsm(MFIL, function(bd) {
     if (!bd) { lg("ERR","manifest fail"); Shelly.call("Script.Stop",{id:SLFI},null); return; }
     let mf; try{mf=JSON.parse(bd);bd=null;}catch(e){lg("ERR","parse");Shelly.call("Script.Stop",{id:SLFI},null);return;}
 
     function dvc() {
-      // kvsConfig keys hardcoded — provision.json not needed at dvc() time
-      let kl=["wd.br","wd.pt","wd.pv","wd.kvd_ver","wd.last_upd","wd.tz_offset","wd.force_upd",
-              "mqtt.enable","mqtt.server","mqtt.client_id","mqtt.topic_prefix","device.name","device.tz"];
-      let dk=Object.keys(mf.kvsDefaults||{});
-      for (let j=0;j<dk.length;j++) kl.push(dk[j]);
       mf=null;
-      gkrs(kl, function() {
-        lg("INFO","update complete");
-        // Supervisor stopped itself to yield heap; find it by name and restart it
-        Shelly.call("Script.List",{},function(r,e) {
-          if (!e&&r&&r.scripts) for(let i=0;i<r.scripts.length;i++) {
-            if(r.scripts[i].name==="supervisor") {
-              Shelly.call("Script.Start",{id:r.scripts[i].id},null);
-              break;
-            }
+      lg("INFO","update complete");
+      Shelly.call("Script.List",{},function(r,e) {
+        if (!e&&r&&r.scripts) for(let i=0;i<r.scripts.length;i++) {
+          if(r.scripts[i].name==="supervisor") {
+            Shelly.call("Script.Start",{id:r.scripts[i].id},null);
+            break;
           }
-          Shelly.call("Script.Stop",{id:SLFI},null);
-        });
+        }
+        Shelly.call("Script.Stop",{id:SLFI},null);
       });
     }
 
@@ -320,7 +237,6 @@ Timer.set(1000, false, function() {
       if (pv==="1") {
         afterProv();
       } else {
-        // Fetch provision.json separately — keeps manifest.json small for normal update runs
         fgsm(PFIL, function(pb) {
           let pr=null;
           if (pb) { try{pr=JSON.parse(pb);}catch(e){} pb=null; }
