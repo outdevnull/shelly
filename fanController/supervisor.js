@@ -1,7 +1,7 @@
-// version: 2.2.0
-// Named callbacks for all KVS calls — prevents lazy-parse OOM when tick() fires at 60s.
+// version: 2.3.0
+// Serialise tz fetch before disc; retry disc up to 3x on Script.List error.
 
-let F=-1, U=-1, tz=36000, ldx=-1;
+let F=-1, U=-1, tz=36000, ldx=-1, dR=3;
 let SLFI=Shelly.getCurrentScriptId();
 function p(m) { print("[SUP] "+m); }
 function kg(k,cb) { Shelly.call("KVS.Get",{key:k},function(r,e){cb((!e&&r)?r.value:null);}); }
@@ -9,13 +9,14 @@ function ks(k,v,cb) { Shelly.call("KVS.Set",{key:k,value:String(v)},function(r,e
 
 function disc(cb) {
   Shelly.call("Script.List",{},function(r,e) {
-    F=-1; U=-1;
-    if (!e&&r&&r.scripts) for (let i=0;i<r.scripts.length;i++) {
+    if((e||!r||!r.scripts)&&dR>0){dR--;p("list err");Timer.set(3000,false,function(){disc(cb);});return;}
+    dR=3;F=-1;U=-1;
+    if(r&&r.scripts)for(let i=0;i<r.scripts.length;i++){
       let s=r.scripts[i];
-      if (s.name==="fancontroller") F=s.id;
-      if (s.name==="updater") U=s.id;
+      if(s.name==="fancontroller")F=s.id;
+      if(s.name==="updater")U=s.id;
     }
-    p("F:"+F+" U:"+U); if (cb) cb();
+    p("F:"+F+" U:"+U);if(cb)cb();
   });
 }
 
@@ -57,10 +58,12 @@ function tick() { kg("wd.force_upd",onForceUpd); }
 
 Timer.set(2000,false,function() {
   p("boot");
-  kg("wd.tz_offset",function(t) { if (t!==null) tz=t*1; });
-  disc(function() {
-    Timer.set(300000,true,sfan);
-    Timer.set(60000,true,tick);
-    if (F<0) { p("install"); go(); } else sfan();
+  kg("wd.tz_offset",function(t) {
+    if(t!==null) tz=t*1;
+    disc(function() {
+      Timer.set(300000,true,sfan);
+      Timer.set(60000,true,tick);
+      if(F<0){p("install");go();}else sfan();
+    });
   });
 });
