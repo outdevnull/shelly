@@ -1,9 +1,9 @@
-// version: 1.2.0
+// version: 1.3.0
 // === Shelly Updater - Fan Controller ===
-// Started by supervisor. On first run (wd.pv not set) fetches provision.json for device
-// setup. Always fetches manifest.json (scripts + kvsDefaults only) for version checks,
-// script deploy, and KVS defaults update. Regenerates kvs_restore. Stops self.
-// manifest.json is kept small (<900 bytes) to avoid OOM during string assembly + JSON parse.
+// Started by supervisor (which stops itself first to yield the heap).
+// On first run (wd.pv not set) fetches provision.json. Always fetches manifest.json for
+// version checks, script deploy, KVS defaults update, kvs_restore. When done, restarts
+// supervisor by name then stops self. Supervisor can be updated (no longer skipped in cdal).
 
 let CFW  = "https://shelly-proxy.ash-b39.workers.dev";
 let MFIL = "manifest.json";
@@ -109,7 +109,7 @@ function dpsc(sc, cb) {
 function cdal(sc, i, cb) {
   if (i>=sc.length) { cb(); return; }
   let s=sc[i]; i++;
-  if (!s.file||s.name==="supervisor") { cdal(sc,i,cb); return; }
+  if (!s.file) { cdal(sc,i,cb); return; }
 
   kget("s."+s.id+".ok",function(ok) {
     if (ok==="0") { dpsc(s,function(){cdal(sc,i,cb);}); return; }
@@ -295,7 +295,16 @@ Timer.set(1000, false, function() {
       mf=null;
       gkrs(kl, function() {
         lg("INFO","update complete");
-        Shelly.call("Script.Stop",{id:SLFI},null);
+        // Supervisor stopped itself to yield heap; find it by name and restart it
+        Shelly.call("Script.List",{},function(r,e) {
+          if (!e&&r&&r.scripts) for(let i=0;i<r.scripts.length;i++) {
+            if(r.scripts[i].name==="supervisor") {
+              Shelly.call("Script.Start",{id:r.scripts[i].id},null);
+              break;
+            }
+          }
+          Shelly.call("Script.Stop",{id:SLFI},null);
+        });
       });
     }
 
