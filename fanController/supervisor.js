@@ -1,7 +1,5 @@
-// version: 2.1.0
-// Supervisor — boot, health, update scheduling. Minimal heap footprint.
-// Update cycle: stop fan → start updater → stop self (yields full heap to updater).
-// Updater restarts supervisor when done. Supervisor can be OTA-updated each cycle.
+// version: 2.2.0
+// Named callbacks for all KVS calls — prevents lazy-parse OOM when tick() fires at 60s.
 
 let F=-1, U=-1, tz=36000, ldx=-1;
 let SLFI=Shelly.getCurrentScriptId();
@@ -31,31 +29,31 @@ function sfan() {
 
 function go() {
   if (U<0) { p("no upd"); return; }
-  p("update, yielding heap");
+  p("update");
   function st() {
     Shelly.call("Script.Start",{id:U},function(r,e) {
       if (e) { p("upd err"); sfan(); return; }
-      // Updater is loaded — stop self to free our heap for updater's execution
       Shelly.call("Script.Stop",{id:SLFI},null);
     });
   }
   if (F>=0) Shelly.call("Script.Stop",{id:F},function(){st();}); else st();
 }
 
-function tick() {
-  kg("wd.force_upd",function(fu) {
-    if (fu==="1") { ks("wd.force_upd","0",function(){go();}); return; }
-    let now=Shelly.getComponentStatus("sys").unixtime;
-    let hr=Math.floor(((now+tz)%86400)/3600), day=Math.floor((now+tz)/86400);
-    if (hr===2&&day!==ldx) {
-      ldx=day;
-      kg("wd.last_upd",function(lu) {
-        if (String(lu)===String(day)) return;
-        ks("wd.last_upd",String(day),function() { p("2am"); go(); });
-      });
-    }
-  });
+function onLastUpd(lu) {
+  let now=Shelly.getComponentStatus("sys").unixtime;
+  let day=Math.floor((now+tz)/86400);
+  if (String(lu)===String(day)) return;
+  ks("wd.last_upd",String(day),function(){p("2am");go();});
 }
+
+function onForceUpd(fu) {
+  if (fu==="1") { ks("wd.force_upd","0",function(){go();}); return; }
+  let now=Shelly.getComponentStatus("sys").unixtime;
+  let hr=Math.floor(((now+tz)%86400)/3600), day=Math.floor((now+tz)/86400);
+  if (hr===2&&day!==ldx) { ldx=day; kg("wd.last_upd",onLastUpd); }
+}
+
+function tick() { kg("wd.force_upd",onForceUpd); }
 
 Timer.set(2000,false,function() {
   p("boot");
